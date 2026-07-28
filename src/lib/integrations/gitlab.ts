@@ -194,7 +194,13 @@ export class GitLabClient {
         scope: 'all',
         state: 'all',
         order_by: 'updated_at',
-        sort: 'desc',
+        // Ascending, and it has to be. maxPages truncates the result, so on a
+        // backlog bigger than the cap 'desc' returns the NEWEST page-limit worth
+        // of merge requests and silently drops the oldest — then the cursor
+        // advances past them and no later run ever goes back for them. Ascending
+        // means the truncation falls at the far end, which is exactly what the
+        // cursor is for: the next run resumes there.
+        sort: 'asc',
         view: 'simple',
       },
       maxPages,
