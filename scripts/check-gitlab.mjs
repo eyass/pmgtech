@@ -46,6 +46,33 @@ function loadEnvFile(path) {
 loadEnvFile('.env.local')
 loadEnvFile('.env')
 
+/**
+ * Hours between sync runs, read from vercel.json rather than assumed — the
+ * schedule is plan-dependent (Hobby allows one run a day), and an estimate based
+ * on the wrong interval is worse than no estimate.
+ */
+function cronInterval() {
+  try {
+    const config = JSON.parse(readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'))
+    const schedule = config?.crons?.[0]?.schedule
+    if (typeof schedule === 'string') {
+      const hourField = schedule.trim().split(/\s+/)[1]
+      if (hourField === '*') return { hours: 1, label: 'hourly' }
+      const step = /^\*\/(\d+)$/.exec(hourField)
+      if (step) return { hours: Number(step[1]), label: `every ${step[1]}h` }
+      // A fixed hour, or a list of them: one run per listed hour per day.
+      const runsPerDay = hourField.split(',').filter(Boolean).length || 1
+      return {
+        hours: 24 / runsPerDay,
+        label: runsPerDay === 1 ? 'once a day' : `${runsPerDay}x a day`,
+      }
+    }
+  } catch {
+    // No vercel.json, or unparseable — fall through to the documented default.
+  }
+  return { hours: 24, label: 'once a day (assumed)' }
+}
+
 const HOST = (process.env.GITLAB_HOST ?? 'https://gitlab.com').replace(/\/+$/, '')
 const TOKEN = process.env.GITLAB_TOKEN
 const GROUPS = (process.env.GITLAB_GROUPS ?? '').split(',').map((s) => s.trim()).filter(Boolean)
@@ -240,9 +267,23 @@ personal one, so the integration does not break when someone leaves.
   const callsPerRun = 2500 // conservative for a ~4 min serverless window at 4x concurrency
   const runs = Math.max(1, Math.ceil(estimatedCalls / callsPerRun))
 
+  const { hours: cronHours, label: cronLabel } = cronInterval()
+  const unattendedDays = (runs * cronHours) / 24
+
   console.log(`  Merge requests in window   ~${estimatedMrs.toLocaleString('en-GB')}`)
   console.log(`  API calls for full backfill ~${estimatedCalls.toLocaleString('en-GB')}  ${c.dim}(4 per MR + discovery)${c.reset}`)
-  console.log(`  Cron runs to catch up      ~${runs}  ${c.dim}(every 3h → about ${(runs * 3 / 24).toFixed(1)} days unattended)${c.reset}`)
+  console.log(
+    `  Cron runs to catch up      ~${runs}  ${c.dim}(${cronLabel} → about ${unattendedDays.toFixed(1)} days unattended)${c.reset}`,
+  )
+  // A backfill this size is not something to leave to the cron. Say so, rather
+  // than printing a two-week estimate as though it were a plan.
+  if (unattendedDays > 1) {
+    console.log(
+      warn(
+        `That is a long time to leave a backfill running. Drive the first pass by hand instead — repeatedly POST /api/sync?source=gitlab&mode=backfill (it resumes from cursors), or lower BACKFILL_MONTHS.`,
+      ),
+    )
+  }
   if (!anyDeployments) {
     console.log(warn('No deployments found in the sampled projects — deploy frequency, change failure rate and MTTR will all be empty.'))
     console.log(`${c.dim}  Those metrics come from GitLab Deployments (environments), not from pipelines or tags.${c.reset}`)
