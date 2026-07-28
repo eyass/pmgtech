@@ -164,6 +164,85 @@ export function LinkIdentityForm({
   )
 }
 
+/**
+ * Add someone who is not in HiBob — a leaver whose commits are still in the
+ * window, or a contractor. Email is optional but does the most work: commit author
+ * emails match on it, so supplying one attributes their history immediately
+ * instead of needing an identity linked by hand afterwards.
+ */
+export function CreateEngineerForm({
+  action,
+  squads,
+  levels,
+}: {
+  action: Action
+  squads: { id: string; name: string }[]
+  levels: { key: string; label: string }[]
+}) {
+  const [result, formAction] = useAction(action)
+  const field =
+    'rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs'
+
+  return (
+    <form action={formAction} className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]">Full name (required)</span>
+          <input name="fullName" required placeholder="Jane Doe" className={field} />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]">
+            Email — matches their commits
+          </span>
+          <input name="email" type="email" placeholder="jane@petmediagroup.com" className={field} />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]">Job title</span>
+          <input name="jobTitle" placeholder="Senior Software Engineer" className={field} />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]">Level</span>
+          <select name="seniorityKey" defaultValue="unknown" className={field}>
+            {levels.map((level) => (
+              <option key={level.key} value={level.key}>
+                {level.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]">Squad</span>
+          <select name="squadId" defaultValue="" className={field}>
+            <option value="">Unassigned</option>
+            {squads.map((squad) => (
+              <option key={squad.id} value={squad.id}>
+                {squad.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]">Status</span>
+          <select name="isActive" defaultValue="false" className={field}>
+            <option value="false">Former employee</option>
+            <option value="true">Currently employed</option>
+          </select>
+        </label>
+      </div>
+      <div className="flex items-center gap-2">
+        <SubmitButton label="Add engineer" />
+        <Status result={result} />
+      </div>
+      <p className="text-[11px] leading-relaxed text-[var(--color-muted)]">
+        Sets the level and squad as manual, so a later HiBob sync will not overwrite
+        them, and leaves the HiBob id empty so a sync never marks them a leaver.
+        Former employees stay out of the within-level comparisons but their history
+        still counts towards squad and team numbers.
+      </p>
+    </form>
+  )
+}
+
 function SubmitButton({ label, title }: { label: string; title?: string }) {
   const { pending } = useFormStatus()
   return (

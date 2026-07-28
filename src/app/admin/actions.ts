@@ -237,6 +237,163 @@ export async function linkIdentity(formData: FormData): Promise<ActionResult> {
   }
 }
 
+/**
+ * Create an engineer who is not in HiBob — someone who has left but whose git
+ * history is still in the window, or a contractor who was never in the HR system.
+ *
+ * hibob_id stays null, which is what keeps them safe: the HiBob sync only
+ * deactivates rows that carry one, so a manual engineer is never marked a leaver
+ * by a sync that has never heard of them. Sources are recorded as 'manual' so a
+ * later sync does not overwrite the level or squad set here.
+ */
+export async function createEngineer(formData: FormData): Promise<ActionResult> {
+  try {
+    await requireAdmin()
+
+    const fullName = String(formData.get('fullName') ?? '').trim()
+    if (!fullName) throw new Error('Name is required')
+
+    const rawEmail = String(formData.get('email') ?? '').trim().toLowerCase()
+    const email = rawEmail.length > 0 ? rawEmail : null
+    const jobTitle = String(formData.get('jobTitle') ?? '').trim() || null
+    const seniorityKey = String(formData.get('seniorityKey') ?? '').trim() || 'unknown'
+    const squadId = String(formData.get('squadId') ?? '').trim()
+    const isActive = String(formData.get('isActive') ?? '') === 'true'
+
+    const db = supabaseAdmin()
+
+    // Email is unique, and a duplicate would otherwise surface as a raw Postgres
+    // constraint error. It is also the likeliest mistake: adding someone who is
+    // already in the directory under a different spelling of their name.
+    if (email) {
+      const { data: clash } = await db
+        .from('engineers')
+        .select('full_name')
+        .eq('email', email)
+        .maybeSingle()
+      if (clash) {
+        throw new Error(
+          `${email} already belongs to ${(clash as { full_name: string }).full_name}`,
+        )
+      }
+    }
+
+    const { data, error } = await db
+      .from('engineers')
+      .insert({
+        full_name: fullName,
+        email,
+        job_title: jobTitle,
+        seniority_key: seniorityKey,
+        seniority_source: seniorityKey === 'unknown' ? 'unknown' : 'manual',
+        squad_id: squadId === '' ? null : squadId,
+        squad_source: squadId === '' ? 'unassigned' : 'manual',
+        is_active: isActive,
+        include_in_metrics: true,
+        notes: 'Added by hand — not present in HiBob',
+      })
+      .select('id')
+      .single()
+    if (error) throw new Error(error.message)
+
+    // If an email was given, register it as an identity straight away: commit
+    // author emails match on it, so their history attributes without any linking.
+    if (email && data) {
+      await db.from('engineer_identities').upsert(
+        {
+          engineer_id: (data as { id: string }).id,
+          provider: 'email',
+          external_id: email,
+          external_handle: email,
+        },
+        { onConflict: 'provider,external_id' },
+      )
+      const { data: stats } = await db.rpc('reattribute_from_identities')
+      const counts = (stats ?? {}) as Record<string, number>
+      const total = Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0)
+
+      revalidatePath('/admin')
+      revalidatePath('/people')
+      revalidatePath('/')
+      return {
+        ok: true,
+        message: `Added ${fullName} and re-attributed ${total} historical rows`,
+      }
+    }
+
+    revalidatePath('/admin')
+    revalidatePath('/people')
+    return {
+      ok: true,
+      message: `Added ${fullName}. Link a GitLab identity to attribute their history.`,
+    }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/**
+ * Record an account as automated, so its comments stop counting as reviews.
+ *
+ * Separate from dismissing: dismissing only hides a row from triage, whereas this
+ * changes the analysis. An AI reviewer that comments within seconds of every merge
+ * request opening makes "time to first review" measure the bot's latency instead
+ * of a colleague's.
+ */
+export async function markIdentityAsBot(formData: FormData): Promise<ActionResult> {
+  try {
+    await requireAdmin()
+    const identityId = String(formData.get('identityId') ?? '')
+    if (!identityId) throw new Error('Missing identity')
+
+    const db = supabaseAdmin()
+    const { data: identity, error: loadError } = await db
+      .from('unmatched_identities')
+      .select('provider, external_id, external_handle, display_name')
+      .eq('id', identityId)
+      .single()
+    if (loadError) throw new Error(loadError.message)
+
+    const row = identity as {
+      provider: string
+      external_id: string
+      external_handle: string | null
+      display_name: string | null
+    }
+    if (row.external_id.startsWith('email:')) {
+      throw new Error('That is a commit email, not an account — link it to a person instead')
+    }
+
+    const { error: insertError } = await db.from('excluded_accounts').upsert(
+      {
+        provider: row.provider,
+        external_id: row.external_id,
+        label: row.display_name ?? row.external_handle,
+        reason: 'bot',
+      },
+      { onConflict: 'provider,external_id' },
+    )
+    if (insertError) throw new Error(insertError.message)
+
+    await db.from('unmatched_identities').update({ dismissed: true }).eq('id', identityId)
+
+    // Review timing and reviewer counts are stored on merge_requests, so they have
+    // to be re-derived for the exclusion to affect history already synced.
+    const { error: rpcError } = await db.rpc('recompute_mr_review_stats', { p_mr_ids: null })
+    if (rpcError) throw new Error(rpcError.message)
+
+    revalidatePath('/admin')
+    revalidatePath('/')
+    revalidatePath('/delivery')
+    return {
+      ok: true,
+      message: `${row.display_name ?? row.external_handle} excluded from review analysis`,
+    }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
 /** Hide an identity that will never map to a person — a bot, a service account. */
 export async function dismissIdentity(formData: FormData): Promise<ActionResult> {
   try {

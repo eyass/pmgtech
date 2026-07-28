@@ -1,6 +1,7 @@
 import Link from 'next/link'
 
 import {
+  CreateEngineerForm,
   LinkIdentityForm,
   RunSyncButtons,
   SenioritySelect,
@@ -22,8 +23,10 @@ import {
 import { supabaseAdmin } from '@/lib/supabase/admin'
 
 import {
+  createEngineer,
   dismissIdentity,
   linkIdentity,
+  markIdentityAsBot,
   setBoardSquad,
   setEngineerSeniority,
   setEngineerSquad,
@@ -161,10 +164,16 @@ export default async function AdminPage() {
                       engineers={engineerOptions}
                     />
                     <ToggleButton
+                      action={markIdentityAsBot}
+                      fields={{ identityId: identity.id }}
+                      label="It's a bot"
+                      title="Exclude from review analysis — an AI reviewer or CI bot commenting on every merge request otherwise makes time-to-first-review meaningless"
+                    />
+                    <ToggleButton
                       action={dismissIdentity}
                       fields={{ identityId: identity.id }}
                       label="Dismiss"
-                      title="Hide this identity — use for bots and service accounts"
+                      title="Just hide this identity from triage; does not change any metric"
                     />
                   </div>
                 )}
@@ -175,6 +184,20 @@ export default async function AdminPage() {
       </section>
 
       {/* --- engineers -------------------------------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="Add an engineer"
+          hint="For people who are not in HiBob — someone who has left but whose commits are still in the window, or a contractor. Give an email and their history attributes straight away."
+        />
+        <Card>
+          {readOnly ? (
+            <p className="text-xs text-[var(--color-muted)]">Admin access required.</p>
+          ) : (
+            <CreateEngineerForm action={createEngineer} squads={squads} levels={levels} />
+          )}
+        </Card>
+      </section>
 
       <section>
         <SectionHeading
