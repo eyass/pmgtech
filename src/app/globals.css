@@ -1,0 +1,45 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-ink: #0f172a;
+  --color-muted: #64748b;
+  --color-line: #e2e8f0;
+
+  --color-squad-buyer: #2563eb;
+  --color-squad-seller: #059669;
+  --color-squad-monetization: #d97706;
+  --color-squad-growth: #7c3aed;
+
+  --color-good: #059669;
+  --color-warn: #d97706;
+  --color-bad: #dc2626;
+}
+
+@layer base {
+  html {
+    color-scheme: light dark;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Tabular figures keep metric columns from jittering between renders. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-canvas: #0b1020;
+    --color-surface: #121a2e;
+    --color-ink: #e8edf7;
+    --color-muted: #94a3b8;
+    --color-line: #223049;
+  }
+}

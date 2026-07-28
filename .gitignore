@@ -1,0 +1,18 @@
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+
+# Environment — never commit real credentials
+.env
+.env*.local
+!.env.example
+
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+
+npm-debug.log*
+yarn-error.log*
+.eslintcache
