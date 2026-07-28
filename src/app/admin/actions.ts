@@ -352,10 +352,11 @@ export async function markEngineerAsBot(formData: FormData): Promise<ActionResul
     const db = supabaseAdmin()
     const { data: engineer, error: loadError } = await db
       .from('engineers')
-      .select('full_name')
+      .select('full_name, email')
       .eq('id', engineerId)
       .single()
     if (loadError) throw new Error(loadError.message)
+    const engineerRow = engineer as { full_name: string; email: string | null }
 
     const { data: identities, error: identityError } = await db
       .from('engineer_identities')
@@ -363,18 +364,28 @@ export async function markEngineerAsBot(formData: FormData): Promise<ActionResul
       .eq('engineer_id', engineerId)
     if (identityError) throw new Error(identityError.message)
 
-    // Only provider accounts can be excluded — an 'email' identity is a commit
-    // address, and excluding it would silently drop that commit history instead.
     const accounts = (identities ?? [])
       .map((r) => r as { provider: string; external_id: string; external_handle: string | null })
       .filter((r) => r.provider === 'gitlab' || r.provider === 'jira')
+      .map((r) => ({ provider: r.provider, external_id: r.external_id, handle: r.external_handle }))
+
+    // The commit address goes in too, so its commits stop counting as well as its
+    // reviews. Excluding only the GitLab account left a build bot's commits landing
+    // on throughput — half a fix, and the confusing half.
+    if (engineerRow.email) {
+      accounts.push({
+        provider: 'email',
+        external_id: engineerRow.email.toLowerCase(),
+        handle: engineerRow.email,
+      })
+    }
 
     if (accounts.length > 0) {
       const { error: insertError } = await db.from('excluded_accounts').upsert(
         accounts.map((account) => ({
           provider: account.provider,
           external_id: account.external_id,
-          label: account.external_handle ?? (engineer as { full_name: string }).full_name,
+          label: account.handle ?? engineerRow.full_name,
           reason: 'bot',
         })),
         { onConflict: 'provider,external_id' },
@@ -399,8 +410,8 @@ export async function markEngineerAsBot(formData: FormData): Promise<ActionResul
       ok: true,
       message:
         accounts.length > 0
-          ? `${(engineer as { full_name: string }).full_name} marked as automation — ${accounts.length} account(s) excluded from review analysis`
-          : `${(engineer as { full_name: string }).full_name} taken out of metrics. No linked provider account to exclude, so nothing to remove from review analysis.`,
+          ? `${engineerRow.full_name} marked as automation — ${accounts.length} account(s) excluded from review and commit analysis`
+          : `${engineerRow.full_name} taken out of metrics. No linked account or email to exclude, so nothing to remove from the analysis.`,
     }
   } catch (error) {
     return fail(error)
@@ -435,22 +446,39 @@ export async function markIdentityAsBot(formData: FormData): Promise<ActionResul
       external_handle: string | null
       display_name: string | null
     }
-    if (row.external_id.startsWith('email:')) {
-      throw new Error('That is a commit email, not an account — link it to a person instead')
-    }
+    // Commit-email identities are stored as "email:someone@example.com". These used
+    // to be refused, on the grounds that excluding one drops commit history rather
+    // than a reviewer — but that is exactly right for a service account like ci@ or
+    // a build bot that commits under a real address. Recorded under the 'email'
+    // provider, which v_commits also honours, so its commits stop counting too.
+    const isEmailIdentity = row.external_id.startsWith('email:')
+    const provider = isEmailIdentity ? 'email' : row.provider
+    const externalId = isEmailIdentity
+      ? row.external_id.slice('email:'.length).toLowerCase()
+      : row.external_id
 
     const { error: insertError } = await db.from('excluded_accounts').upsert(
       {
-        provider: row.provider,
-        external_id: row.external_id,
+        provider,
+        external_id: externalId,
         label: row.display_name ?? row.external_handle,
-        reason: 'bot',
+        reason: isEmailIdentity ? 'service-account' : 'bot',
       },
       { onConflict: 'provider,external_id' },
     )
     if (insertError) throw new Error(insertError.message)
 
     await db.from('unmatched_identities').update({ dismissed: true }).eq('id', identityId)
+
+    // An address may already be linked to an engineer — a bot that matched a person
+    // record, or one added by hand. Take that row out of metrics and cohorts too,
+    // otherwise the directory keeps counting it as a head.
+    if (isEmailIdentity) {
+      await db
+        .from('engineers')
+        .update({ include_in_metrics: false, is_active: false })
+        .eq('email', externalId)
+    }
 
     // Review timing and reviewer counts are stored on merge_requests, so they have
     // to be re-derived for the exclusion to affect history already synced.

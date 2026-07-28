@@ -103,3 +103,41 @@ begin
     raise notice 'repointed %', target;
   end loop;
 end $mig$;
+
+-- --- service accounts that commit under a real address ------------------------
+-- excluded_accounts only permitted gitlab and jira, on the reasoning that an
+-- 'email:' identity is a commit address and excluding one would drop commit history
+-- rather than a reviewer. That is exactly the point for ci@ or a build bot: its
+-- commits should not land on anyone's throughput. Note that names like "flexo" and
+-- "laika" match no bot-like pattern, so this cannot be left to the pattern list.
+
+alter table excluded_accounts drop constraint if exists excluded_accounts_provider_check;
+alter table excluded_accounts add constraint excluded_accounts_provider_check
+  check (provider in ('gitlab', 'jira', 'email'));
+
+-- Commits from an excluded address stop counting. Rows stay in gitlab_commits —
+-- this changes the analysis, not the record — and matching on the raw author_email
+-- means it holds even when no engineer was ever linked.
+create or replace view v_commits with (security_invoker = true) as
+select
+  c.id,
+  c.sha,
+  c.title,
+  c.authored_at,
+  c.additions,
+  c.deletions,
+  (c.additions + c.deletions)        as churn,
+  c.author_engineer_id,
+  e.full_name                        as author_name,
+  c.project_id,
+  p.name                             as project_name,
+  coalesce(e.squad_id, p.squad_id)   as squad_id
+from gitlab_commits c
+join gitlab_projects p on p.id = c.project_id
+left join engineers e on e.id = c.author_engineer_id
+where not c.is_merge_commit
+  and not exists (
+    select 1 from excluded_accounts x
+    where x.provider = 'email'
+      and lower(x.external_id) = lower(c.author_email)
+  );
