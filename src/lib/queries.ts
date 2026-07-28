@@ -1,5 +1,13 @@
 import { supabaseAdmin } from '@/lib/supabase/admin'
 import type {
+  AssessmentRow,
+  AssessmentSummaryRow,
+  EngineerProfile,
+  KnowledgeConcentrationRow,
+  PerformanceDimension,
+  TeamHealth,
+} from '@/lib/types/performance'
+import type {
   AttentionRow,
   EngineerRow,
   EngineerScorecard,
@@ -219,6 +227,78 @@ export async function getJiraBoards(): Promise<JiraBoardRow[]> {
     .order('name')
   if (error) throw new Error(`Failed to load Jira boards: ${error.message}`)
   return (data ?? []) as JiraBoardRow[]
+}
+
+// --- performance framework ----------------------------------------------------
+
+export function getTeamHealth(range: DateRange) {
+  return rpcRows<TeamHealth>('team_health', rangeArgs(range))
+}
+
+/**
+ * Individual profiles. Percentile bands are computed inside the RPC against the
+ * engineer's own seniority cohort and suppressed when the sample is too small,
+ * so callers cannot accidentally produce an org-wide ranking.
+ */
+export function getEngineerProfiles(range: DateRange, squadId?: string, engineerId?: string) {
+  return rpcRows<EngineerProfile>('engineer_profiles', {
+    ...rangeArgs(range),
+    p_squad_id: squadId ?? null,
+    p_engineer_id: engineerId ?? null,
+  })
+}
+
+export function getKnowledgeConcentration(range: DateRange) {
+  return rpcRows<KnowledgeConcentrationRow>('knowledge_concentration', rangeArgs(range))
+}
+
+export async function getPerformanceDimensions(): Promise<PerformanceDimension[]> {
+  const { data, error } = await supabaseAdmin()
+    .from('performance_dimensions')
+    .select('key, name, team_question, individual_question, what_it_sees, what_it_cannot_see, sort_order')
+    .order('sort_order')
+  if (error) throw new Error(`Failed to load dimensions: ${error.message}`)
+  return (data ?? []) as PerformanceDimension[]
+}
+
+/** The current review period: calendar quarter containing `on`. */
+export function currentPeriod(on = new Date()): { start: string; end: string; label: string } {
+  const q = Math.floor(on.getUTCMonth() / 3)
+  const start = new Date(Date.UTC(on.getUTCFullYear(), q * 3, 1))
+  const end = new Date(Date.UTC(on.getUTCFullYear(), q * 3 + 3, 0))
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  return { start: iso(start), end: iso(end), label: `Q${q + 1} ${on.getUTCFullYear()}` }
+}
+
+export async function getAssessments(
+  engineerId: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<AssessmentRow[]> {
+  const { data, error } = await supabaseAdmin()
+    .from('engineer_assessments')
+    .select('id, engineer_id, period_start, period_end, dimension_key, rating, evidence, assessed_by, updated_at')
+    .eq('engineer_id', engineerId)
+    .eq('period_start', periodStart)
+    .eq('period_end', periodEnd)
+  if (error) throw new Error(`Failed to load assessments: ${error.message}`)
+  return (data ?? []) as AssessmentRow[]
+}
+
+export async function getAssessmentSummary(
+  engineerId: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<AssessmentSummaryRow | null> {
+  const { data, error } = await supabaseAdmin()
+    .from('assessment_summaries')
+    .select('id, engineer_id, period_start, period_end, headline, strengths, growth, assessed_by, updated_at')
+    .eq('engineer_id', engineerId)
+    .eq('period_start', periodStart)
+    .eq('period_end', periodEnd)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to load assessment summary: ${error.message}`)
+  return (data as AssessmentSummaryRow | null) ?? null
 }
 
 /** Whether any data has landed yet — drives the empty state on first deploy. */

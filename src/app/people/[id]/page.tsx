@@ -1,17 +1,27 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
+import { AssessmentForm } from '@/components/assessment-form'
+import { IndividualProfile } from '@/components/performance'
 import { Card, Kpi, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
+import { currentUser } from '@/lib/auth'
 import { compact, hours, nf, relativeDate, shortDate } from '@/lib/format'
 import {
+  currentPeriod,
+  getAssessments,
+  getAssessmentSummary,
   getEngineer,
+  getEngineerProfiles,
   getEngineerScorecards,
+  getPerformanceDimensions,
   getSeniorityBenchmark,
   getSquads,
   PERIODS,
   resolvePeriod,
 } from '@/lib/queries'
 import { supabaseAdmin } from '@/lib/supabase/admin'
+
+import { saveAssessment } from './actions'
 
 export const dynamic = 'force-dynamic'
 
@@ -29,13 +39,21 @@ export default async function PersonPage({
   const engineer = await getEngineer(id)
   if (!engineer) notFound()
 
-  const [scorecards, benchmark, squads, recentMrs, identities] = await Promise.all([
-    getEngineerScorecards(range),
-    getSeniorityBenchmark(range),
-    getSquads(),
-    getRecentMergeRequests(id),
-    getIdentities(id),
-  ])
+  const reviewPeriod = currentPeriod()
+  const [scorecards, benchmark, squads, recentMrs, identities, profiles, dimensions, assessments, summary, user] =
+    await Promise.all([
+      getEngineerScorecards(range),
+      getSeniorityBenchmark(range),
+      getSquads(),
+      getRecentMergeRequests(id),
+      getIdentities(id),
+      getEngineerProfiles(range, undefined, id),
+      getPerformanceDimensions(),
+      getAssessments(id, reviewPeriod.start, reviewPeriod.end),
+      getAssessmentSummary(id, reviewPeriod.start, reviewPeriod.end),
+      currentUser(),
+    ])
+  const profile = profiles[0]
 
   const me = scorecards.find((s) => s.engineer_id === id)
   const squad = squads.find((s) => s.id === engineer.squad_id)
@@ -158,6 +176,48 @@ export default async function PersonPage({
           </p>
         </Card>
       )}
+
+      {/* --- four-dimension profile ------------------------------------------- */}
+
+      {profile ? (
+        <section>
+          <SectionHeading
+            title="Profile"
+            hint="Bands compare against others at the same seniority level, and are suppressed when the sample is too small. There is no composite score by design."
+          />
+          <IndividualProfile profile={profile} />
+        </section>
+      ) : null}
+
+      {/* --- assessment: the human half --------------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title={`Assessment — ${reviewPeriod.label}`}
+          hint="The performance assessment of record. Impact in particular is human-only: telemetry cannot see business value or judgement."
+        />
+        {user?.isAdmin ? (
+          <Card>
+            <AssessmentForm
+              action={saveAssessment}
+              engineerId={id}
+              engineerName={engineer.display_name ?? engineer.full_name}
+              periodStart={reviewPeriod.start}
+              periodEnd={reviewPeriod.end}
+              periodLabel={reviewPeriod.label}
+              dimensions={dimensions}
+              existing={assessments}
+              summary={summary}
+            />
+          </Card>
+        ) : (
+          <Card>
+            <p className="text-sm text-[var(--color-muted)]">
+              Assessments are visible to admins only. Ask an engineering manager if you need access.
+            </p>
+          </Card>
+        )}
+      </section>
 
       {/* --- linked accounts -------------------------------------------------- */}
 

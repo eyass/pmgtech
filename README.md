@@ -80,7 +80,34 @@ Import the repo in Vercel, add the environment variables, deploy. `vercel.json`
 registers a cron that hits `/api/sync` every three hours; Vercel sends
 `CRON_SECRET` as a bearer token automatically once that variable exists.
 
-### 5. First sync
+### 5. Check GitLab before syncing
+
+```bash
+npm run check:gitlab
+```
+
+Read-only preflight — writes nothing and needs no database access, so it runs before
+`SUPABASE_SERVICE_ROLE_KEY` exists. It reports whether the token is valid and has `read_api`, which
+projects the sync would discover, how many merge requests are in the backfill window, and roughly
+how many API calls and cron runs the first sync will take. It also warns when a group has no GitLab
+Deployments, which is the usual reason deploy frequency, change failure rate and MTTR come back
+empty.
+
+Add the token without putting it in a chat message or your shell history:
+
+```bash
+read -rs TOKEN && echo "GITLAB_TOKEN=$TOKEN" >> .env.local && unset TOKEN
+echo 'GITLAB_GROUPS=your-group' >> .env.local
+```
+
+`.env.local` is gitignored. To let the sync actually write to Supabase you additionally need the
+service-role key, added the same way:
+
+```bash
+read -rs KEY && echo "SUPABASE_SERVICE_ROLE_KEY=$KEY" >> .env.local && unset KEY
+```
+
+### 6. First sync
 
 Run these in order from the admin page (HiBob first — it builds the directory
 that the other two resolve their authors against):
