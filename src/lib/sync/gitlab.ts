@@ -601,10 +601,10 @@ async function syncProject(
   if (deploymentRows.length > 0) {
     // Only production deployments are stored. Every consumer — deploy frequency,
     // change failure rate, MTTR — reads v_prod_deployments, which filters on
-    // is_production, so the qa/staging/testing/e2e environments are dead weight:
-    // they are about 96% of the volume here, and keeping them would mean ~650,000
-    // rows to serve ~26,000 useful ones. If a non-production metric is ever wanted,
-    // this filter is the thing to relax, and it needs a re-sync to backfill them.
+    // is_production, so the qa/staging/testing/e2e environments are dead weight.
+    // Measured on this org: 20,000 fetched, 7,485 kept, so roughly 60% of the volume.
+    // If a non-production metric is ever wanted, this filter is the thing to relax,
+    // and it needs a re-sync to backfill what was skipped.
     const productionRows = deploymentRows.filter((row) => row.is_production === true)
     counts.deployments += await upsertInChunks(
       ctx.db,
