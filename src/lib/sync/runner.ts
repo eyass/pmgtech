@@ -151,13 +151,37 @@ export async function upsertInChunks(
   let written = 0
   for (let i = 0; i < deduped.length; i += chunkSize) {
     const chunk = deduped.slice(i, i + chunkSize)
-    const { error } = await db.from(table).upsert(chunk, { onConflict, ignoreDuplicates: false })
-    if (error) {
-      throw new Error(`Upsert into ${table} failed (rows ${i}-${i + chunk.length}): ${error.message}`)
+
+    // Retry transient write failures. A backfill slice can be twenty-odd chunks and
+    // every one is a chance for the connection to wobble — a single
+    // "connection timeout" reaching the caller aborts the whole project and throws
+    // away the slice. Constraint violations are not retryable and are recognisable
+    // by their SQLSTATE (23xxx), so those still fail immediately rather than being
+    // attempted five times.
+    let lastMessage = ''
+    let ok = false
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const { error } = await db.from(table).upsert(chunk, { onConflict, ignoreDuplicates: false })
+      if (!error) {
+        ok = true
+        break
+      }
+      lastMessage = error.message
+      const permanent = typeof error.code === 'string' && /^(22|23|42)/.test(error.code)
+      if (permanent || attempt === 4) break
+      await sleep(Math.min(1000 * 2 ** (attempt - 1), 8000) + Math.random() * 250)
+    }
+
+    if (!ok) {
+      throw new Error(`Upsert into ${table} failed (rows ${i}-${i + chunk.length}): ${lastMessage}`)
     }
     written += chunk.length
   }
   return written
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
