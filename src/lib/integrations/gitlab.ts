@@ -117,6 +117,16 @@ export interface GitLabPipeline {
 export const MR_PAGE_MAX_PAGES = 30
 export const MR_PAGE_LIMIT = MR_PAGE_MAX_PAGES * 100
 
+/**
+ * Same idea for deployments and pipelines, but a much larger budget. These cost one
+ * call per hundred records with no per-record follow-up, and a busy project produces
+ * them in enormous numbers — this org emits roughly 2,000 deployments every seven
+ * hours across 172 environments, so a 20-page cap meant a three-month window would
+ * have taken hundreds of runs to walk.
+ */
+export const EVENT_PAGE_MAX_PAGES = 200
+export const EVENT_PAGE_LIMIT = EVENT_PAGE_MAX_PAGES * 100
+
 export class GitLabClient {
   private readonly host: string
   private readonly token: string
@@ -187,12 +197,9 @@ export class GitLabClient {
   }
 
   /**
-   * Merge requests updated since a timestamp. Using updated_after (rather than
-   * created_after) is what makes the incremental sync catch MRs that were
+   * Merge requests in an updated_at window. Windowing on updated_at rather than
+   * created_at is what makes an incremental sync catch a merge request that was
    * opened long ago but merged today.
-   */
-  /**
-   * Merge requests in an updated_at window.
    *
    * The result is truncated at MR_PAGE_LIMIT, so sort order decides which end of
    * the window survives — and the caller's cursor has to agree with it. Walking
@@ -272,19 +279,43 @@ export class GitLabClient {
     )
   }
 
-  async deployments(projectId: number, updatedAfter: string): Promise<GitLabDeployment[]> {
+  /**
+   * Deployments in an updated_at window. Truncated at EVENT_PAGE_LIMIT, so the
+   * same rule as merge requests applies: the sort has to drop the end the caller's
+   * cursor will resume from. A busy project deploys far more often than it merges
+   * — this org has 172 environments — so this cap is reached easily.
+   */
+  async deployments(
+    projectId: number,
+    updatedAfter: string,
+    options: { updatedBefore?: string; sort?: 'asc' | 'desc' } = {},
+  ): Promise<GitLabDeployment[]> {
     return this.getAll<GitLabDeployment>(
       `/projects/${projectId}/deployments`,
-      { updated_after: updatedAfter, order_by: 'updated_at', sort: 'desc' },
-      20,
+      {
+        updated_after: updatedAfter,
+        updated_before: options.updatedBefore,
+        order_by: 'updated_at',
+        sort: options.sort ?? 'asc',
+      },
+      EVENT_PAGE_MAX_PAGES,
     )
   }
 
-  async pipelines(projectId: number, updatedAfter: string): Promise<GitLabPipeline[]> {
+  async pipelines(
+    projectId: number,
+    updatedAfter: string,
+    options: { updatedBefore?: string; sort?: 'asc' | 'desc' } = {},
+  ): Promise<GitLabPipeline[]> {
     return this.getAll<GitLabPipeline>(
       `/projects/${projectId}/pipelines`,
-      { updated_after: updatedAfter, order_by: 'updated_at', sort: 'desc' },
-      20,
+      {
+        updated_after: updatedAfter,
+        updated_before: options.updatedBefore,
+        order_by: 'updated_at',
+        sort: options.sort ?? 'asc',
+      },
+      EVENT_PAGE_MAX_PAGES,
     )
   }
 }

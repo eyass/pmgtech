@@ -50,6 +50,12 @@ export interface OrgKpis {
   deploys_per_week: number | null
   change_failure_pct: number | null
   mttr_hours: number | null
+  /**
+   * How much of the requested period actually contains production-deployment data.
+   * The three deploy metrics above are withheld (null) below 50%, because a weekly
+   * rate extrapolated from a sliver of the window is not a rate.
+   */
+  deploy_coverage_pct: number | null
   issues_resolved: number
   story_points: number
   median_issue_cycle_hours: number | null

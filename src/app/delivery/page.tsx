@@ -86,6 +86,18 @@ export default async function DeliveryPage({
         />
       </div>
 
+      {kpis.deploy_coverage_pct !== null && kpis.deploy_coverage_pct < 50 ? (
+        <Card className="border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30">
+          <p className="text-xs leading-relaxed">
+            <strong>Deploy metrics withheld.</strong> Production-deployment history covers only{' '}
+            {pct(kpis.deploy_coverage_pct, 1)} of this period, so deploy frequency, change failure
+            rate and time to restore would describe a sliver of the window rather than the window.
+            The {nf(kpis.prod_deploys)} deploys found are shown above; the derived rates are not.
+            Run a GitLab backfill to fill in the history, and they appear on their own.
+          </p>
+        </Card>
+      ) : null}
+
       <Card>
         <SectionHeading title="How these are calculated" />
         <dl className="grid gap-3 text-sm sm:grid-cols-2">

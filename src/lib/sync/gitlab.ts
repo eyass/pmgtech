@@ -2,6 +2,7 @@ import { appEnv, gitlabEnv, jiraEnv } from '@/lib/env'
 import {
   extractJiraKeys,
   GitLabClient,
+  EVENT_PAGE_LIMIT,
   isDraft,
   MR_PAGE_LIMIT,
   type GitLabProject,
@@ -191,6 +192,68 @@ async function discoverProjects(
     .eq('archived', false)
   if (error) throw new Error(`Failed to load tracked projects: ${error.message}`)
   return (data ?? []) as TrackedProject[]
+}
+
+/**
+ * Window for a deployment or pipeline listing, in whichever direction the run is
+ * walking. Mirrors what syncProject does for merge requests, because these streams
+ * have exactly the same truncation problem and need exactly the same treatment:
+ * a busy project produces far more deployments than merge requests, so the page
+ * limit is reached sooner, not later.
+ */
+async function eventWindow(
+  ctx: SyncContext,
+  backwards: boolean,
+  windowStart: Date,
+  forwardKey: string,
+  backfillKey: string,
+  backfillMonths: number,
+): Promise<{ since: string; updatedBefore: string | undefined }> {
+  if (!backwards) {
+    return { since: await ctx.since(forwardKey, backfillMonths), updatedBefore: undefined }
+  }
+  // Claim the present for the forward cursor on the first backward pass, so
+  // incremental runs keep the recent end fresh while the past is still being walked.
+  if (!(await ctx.getCursor(forwardKey))) {
+    await ctx.setCursor(forwardKey, new Date().toISOString())
+  }
+  return {
+    since: windowStart.toISOString(),
+    updatedBefore: (await ctx.getCursor(backfillKey)) ?? undefined,
+  }
+}
+
+/**
+ * Move the cursor after a listing.
+ *
+ * The forward cursor may only jump to "now" when the result was NOT truncated.
+ * Doing it unconditionally — which is what used to happen here — meant a truncated
+ * fetch declared everything up to the present as captured, and the records beyond
+ * the cut were never requested again. That is why every deployment in the database
+ * came from a single day.
+ */
+async function advanceEventCursor(
+  ctx: SyncContext,
+  backwards: boolean,
+  forwardKey: string,
+  backfillKey: string,
+  /**
+   * updated_at of the last record processed. The list is sorted in the direction of
+   * travel, so this is the oldest one on a backward pass and the newest on a forward
+   * one — either way it is the point the next run should resume from.
+   */
+  lastProcessed: string | null,
+  truncated: boolean,
+): Promise<void> {
+  if (backwards) {
+    if (lastProcessed) await ctx.setCursor(backfillKey, lastProcessed)
+    return
+  }
+  if (!truncated) {
+    await ctx.setCursor(forwardKey, new Date().toISOString())
+  } else if (lastProcessed) {
+    await ctx.setCursor(forwardKey, lastProcessed)
+  }
 }
 
 async function loadProductionPatterns(ctx: SyncContext): Promise<string[]> {
@@ -492,8 +555,19 @@ async function syncProject(
   // --- deployments ------------------------------------------------------------
 
   const deployCursorKey = `project:${project.gitlab_id}:deployments`
-  const deploySince = await ctx.since(deployCursorKey, config.backfillMonths)
-  const deployments = await client.deployments(project.gitlab_id, deploySince)
+  const deployBackfillKey = `${deployCursorKey}:oldest`
+  const deployWindow = await eventWindow(ctx, backwards, windowStart, deployCursorKey, deployBackfillKey, config.backfillMonths)
+  const deployments = await client.deployments(project.gitlab_id, deployWindow.since, {
+    updatedBefore: deployWindow.updatedBefore,
+    sort: backwards ? 'desc' : 'asc',
+  })
+  deployments.sort((a, b) =>
+    backwards ? b.updated_at.localeCompare(a.updated_at) : a.updated_at.localeCompare(b.updated_at),
+  )
+  const deploysTruncated = deployments.length >= EVENT_PAGE_LIMIT
+  ctx.log(
+    `${project.path_with_namespace}: ${deployments.length} deployments${backwards ? ` updated before ${deployWindow.updatedBefore ?? 'now'}` : ` since ${deployWindow.since}`}${deploysTruncated ? ' [truncated at page limit]' : ''}`,
+  )
   const deploymentRows: Record<string, unknown>[] = []
 
   for (const deployment of deployments) {
@@ -525,20 +599,42 @@ async function syncProject(
     })
   }
   if (deploymentRows.length > 0) {
+    // Only production deployments are stored. Every consumer — deploy frequency,
+    // change failure rate, MTTR — reads v_prod_deployments, which filters on
+    // is_production, so the qa/staging/testing/e2e environments are dead weight:
+    // they are about 96% of the volume here, and keeping them would mean ~650,000
+    // rows to serve ~26,000 useful ones. If a non-production metric is ever wanted,
+    // this filter is the thing to relax, and it needs a re-sync to backfill them.
+    const productionRows = deploymentRows.filter((row) => row.is_production === true)
     counts.deployments += await upsertInChunks(
       ctx.db,
       'gitlab_deployments',
-      deploymentRows,
+      productionRows,
       'project_id,gitlab_id',
     )
   }
-  await ctx.setCursor(deployCursorKey, new Date().toISOString())
+  await advanceEventCursor(
+    ctx,
+    backwards,
+    deployCursorKey,
+    deployBackfillKey,
+    deployments.at(-1)?.updated_at ?? null,
+    deploysTruncated,
+  )
 
   // --- pipelines --------------------------------------------------------------
 
   const pipelineCursorKey = `project:${project.gitlab_id}:pipelines`
-  const pipelineSince = await ctx.since(pipelineCursorKey, config.backfillMonths)
-  const pipelines = await client.pipelines(project.gitlab_id, pipelineSince)
+  const pipelineBackfillKey = `${pipelineCursorKey}:oldest`
+  const pipelineWindow = await eventWindow(ctx, backwards, windowStart, pipelineCursorKey, pipelineBackfillKey, config.backfillMonths)
+  const pipelines = await client.pipelines(project.gitlab_id, pipelineWindow.since, {
+    updatedBefore: pipelineWindow.updatedBefore,
+    sort: backwards ? 'desc' : 'asc',
+  })
+  pipelines.sort((a, b) =>
+    backwards ? b.updated_at.localeCompare(a.updated_at) : a.updated_at.localeCompare(b.updated_at),
+  )
+  const pipelinesTruncated = pipelines.length >= EVENT_PAGE_LIMIT
   const pipelineRows = pipelines.map((p) => ({
     gitlab_id: p.id,
     project_id: project.id,
@@ -555,7 +651,21 @@ async function syncProject(
   if (pipelineRows.length > 0) {
     counts.pipelines += await upsertInChunks(ctx.db, 'gitlab_pipelines', pipelineRows, 'gitlab_id')
   }
-  await ctx.setCursor(pipelineCursorKey, new Date().toISOString())
+  await advanceEventCursor(
+    ctx,
+    backwards,
+    pipelineCursorKey,
+    pipelineBackfillKey,
+    pipelines.at(-1)?.updated_at ?? null,
+    pipelinesTruncated,
+  )
+
+  // The window is only fully covered when every stream has reached its start.
+  // Merge requests finishing first says nothing about deployments, which are far
+  // more numerous and hit the page limit sooner.
+  if (backwards && (deploysTruncated || pipelinesTruncated)) {
+    counts.backfillComplete = false
+  }
 
   counts.completed = true
   return counts
