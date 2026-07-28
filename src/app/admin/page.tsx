@@ -26,6 +26,7 @@ import {
   createEngineer,
   dismissIdentity,
   linkIdentity,
+  markEngineerAsBot,
   markIdentityAsBot,
   setBoardSquad,
   setEngineerSeniority,
@@ -213,6 +214,7 @@ export default async function AdminPage() {
               <Th>Squad</Th>
               <Th>Level</Th>
               <Th align="right">In metrics</Th>
+              <Th align="right">Automation</Th>
               <Th align="right">Status</Th>
             </>
           }
@@ -269,6 +271,18 @@ export default async function AdminPage() {
                     }}
                     label={engineer.include_in_metrics ? 'Exclude' : 'Include'}
                     title="Excluded people keep their history but drop out of headcount and per-engineer rates"
+                  />
+                )}
+              </Td>
+              <Td align="right">
+                {readOnly ? (
+                  <span className="text-xs text-[var(--color-muted)]">—</span>
+                ) : (
+                  <ToggleButton
+                    action={markEngineerAsBot}
+                    fields={{ engineerId: engineer.id }}
+                    label="It's a bot"
+                    title="Not a person: excludes its GitLab and Jira accounts from review analysis, drops it from metrics and cohorts, and re-derives affected history"
                   />
                 )}
               </Td>

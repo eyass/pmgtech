@@ -333,6 +333,81 @@ export async function createEngineer(formData: FormData): Promise<ActionResult> 
 }
 
 /**
+ * Mark a directory entry as automation rather than a person.
+ *
+ * A bot can end up in the engineer list the same way anyone does — its commit
+ * email matched, or it was added by hand — and once there it distorts two things
+ * at once: it counts as a reviewer, and it counts as a head in its squad. So this
+ * excludes every provider account linked to it from review analysis, takes it out
+ * of metrics, and marks it inactive so it leaves the within-level cohorts. The row
+ * is kept rather than deleted, because its identities are what stop the sync
+ * re-creating it on the next run.
+ */
+export async function markEngineerAsBot(formData: FormData): Promise<ActionResult> {
+  try {
+    await requireAdmin()
+    const engineerId = String(formData.get('engineerId') ?? '')
+    if (!engineerId) throw new Error('Missing engineer')
+
+    const db = supabaseAdmin()
+    const { data: engineer, error: loadError } = await db
+      .from('engineers')
+      .select('full_name')
+      .eq('id', engineerId)
+      .single()
+    if (loadError) throw new Error(loadError.message)
+
+    const { data: identities, error: identityError } = await db
+      .from('engineer_identities')
+      .select('provider, external_id, external_handle')
+      .eq('engineer_id', engineerId)
+    if (identityError) throw new Error(identityError.message)
+
+    // Only provider accounts can be excluded — an 'email' identity is a commit
+    // address, and excluding it would silently drop that commit history instead.
+    const accounts = (identities ?? [])
+      .map((r) => r as { provider: string; external_id: string; external_handle: string | null })
+      .filter((r) => r.provider === 'gitlab' || r.provider === 'jira')
+
+    if (accounts.length > 0) {
+      const { error: insertError } = await db.from('excluded_accounts').upsert(
+        accounts.map((account) => ({
+          provider: account.provider,
+          external_id: account.external_id,
+          label: account.external_handle ?? (engineer as { full_name: string }).full_name,
+          reason: 'bot',
+        })),
+        { onConflict: 'provider,external_id' },
+      )
+      if (insertError) throw new Error(insertError.message)
+    }
+
+    const { error: updateError } = await db
+      .from('engineers')
+      .update({ include_in_metrics: false, is_active: false })
+      .eq('id', engineerId)
+    if (updateError) throw new Error(updateError.message)
+
+    const { error: rpcError } = await db.rpc('recompute_mr_review_stats', { p_mr_ids: null })
+    if (rpcError) throw new Error(rpcError.message)
+
+    revalidatePath('/admin')
+    revalidatePath('/people')
+    revalidatePath('/')
+    revalidatePath('/delivery')
+    return {
+      ok: true,
+      message:
+        accounts.length > 0
+          ? `${(engineer as { full_name: string }).full_name} marked as automation — ${accounts.length} account(s) excluded from review analysis`
+          : `${(engineer as { full_name: string }).full_name} taken out of metrics. No linked provider account to exclude, so nothing to remove from review analysis.`,
+    }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/**
  * Record an account as automated, so its comments stop counting as reviews.
  *
  * Separate from dismissing: dismissing only hides a row from triage, whereas this
