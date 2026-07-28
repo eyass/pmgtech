@@ -108,6 +108,15 @@ export interface GitLabPipeline {
   duration?: number | null
 }
 
+/**
+ * Page budget for a merge-request listing, and the record count it implies.
+ * Exported because the sync has to know whether a result was truncated: a full
+ * page-limit result means there is more beyond it, and the cursor must be left
+ * where the next run can pick it up.
+ */
+export const MR_PAGE_MAX_PAGES = 30
+export const MR_PAGE_LIMIT = MR_PAGE_MAX_PAGES * 100
+
 export class GitLabClient {
   private readonly host: string
   private readonly token: string
@@ -182,28 +191,33 @@ export class GitLabClient {
    * created_after) is what makes the incremental sync catch MRs that were
    * opened long ago but merged today.
    */
+  /**
+   * Merge requests in an updated_at window.
+   *
+   * The result is truncated at MR_PAGE_LIMIT, so sort order decides which end of
+   * the window survives — and the caller's cursor has to agree with it. Walking
+   * forward from the oldest wants 'asc'; walking backward from the newest wants
+   * 'desc' plus an updatedBefore frontier. Either way the truncation must fall on
+   * the side the next run will resume from, or the dropped merge requests are
+   * never fetched again.
+   */
   async mergeRequests(
     projectId: number,
     updatedAfter: string,
-    maxPages = 30,
+    options: { updatedBefore?: string; sort?: 'asc' | 'desc'; maxPages?: number } = {},
   ): Promise<GitLabMergeRequest[]> {
     return this.getAll<GitLabMergeRequest>(
       `/projects/${projectId}/merge_requests`,
       {
         updated_after: updatedAfter,
+        updated_before: options.updatedBefore,
         scope: 'all',
         state: 'all',
         order_by: 'updated_at',
-        // Ascending, and it has to be. maxPages truncates the result, so on a
-        // backlog bigger than the cap 'desc' returns the NEWEST page-limit worth
-        // of merge requests and silently drops the oldest — then the cursor
-        // advances past them and no later run ever goes back for them. Ascending
-        // means the truncation falls at the far end, which is exactly what the
-        // cursor is for: the next run resumes there.
-        sort: 'asc',
+        sort: options.sort ?? 'asc',
         view: 'simple',
       },
-      maxPages,
+      options.maxPages ?? MR_PAGE_MAX_PAGES,
     )
   }
 

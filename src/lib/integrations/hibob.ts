@@ -147,7 +147,15 @@ function normalisePerson(raw: HiBobEmployee): HiBobPerson {
   const fullName = asString(raw.displayName) ?? (composedName.length > 0 ? composedName : 'Unknown')
 
   const status = (raw.internal?.status ?? raw.internal?.lifecycleStatus ?? '').toLowerCase()
-  const terminated = Boolean(raw.internal?.terminationDate)
+
+  // A termination date in the future is a notice period, not a departure: the
+  // person is still employed and still shipping, and treating them as inactive
+  // would drop them out of v_engineers and erase them from their squad's numbers
+  // weeks before they actually leave.
+  const terminationAt = raw.internal?.terminationDate
+    ? Date.parse(String(raw.internal.terminationDate))
+    : NaN
+  const terminated = !Number.isNaN(terminationAt) && terminationAt <= Date.now()
 
   return {
     hibobId: String(raw.id),

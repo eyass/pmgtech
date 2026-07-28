@@ -3,6 +3,7 @@ import {
   extractJiraKeys,
   GitLabClient,
   isDraft,
+  MR_PAGE_LIMIT,
   type GitLabProject,
   type GitLabUser,
 } from '@/lib/integrations/gitlab'
@@ -21,10 +22,18 @@ import {
  *
  * Resumability is the important property here. A single merge request costs four
  * API calls (detail, commits, notes, approvals), so a twelve-month backfill of a
- * real org cannot finish inside one serverless invocation. Merge requests are
- * therefore fetched oldest-updated-first and the project cursor is advanced to
- * the last MR actually written — when the time budget runs out mid-project the
- * run reports 'partial' and the next run picks up exactly where it stopped.
+ * real org cannot finish inside one serverless invocation. Runs stop cleanly on a
+ * time budget, report 'partial', and resume from their cursors.
+ *
+ * There are two directions, with a cursor each:
+ *  - 'backfill' walks newest-first towards the past, so the dashboard is useful
+ *    immediately and older history fills in behind it. Its frontier lives in
+ *    `:oldest` and moves backwards.
+ *  - 'incremental' walks forward from the high-water-mark cursor to keep the
+ *    recent end current.
+ * Both matter because the listing is truncated at a page limit: whichever end the
+ * sort drops has to be the end the cursor will resume from, or those merge
+ * requests are never fetched again.
  */
 export async function syncGitLab(
   mode: SyncMode = 'incremental',
@@ -45,6 +54,12 @@ export async function syncGitLab(
     unmatched_identities: 0,
     project_errors: 0,
     ran_out_of_time: 0,
+    /**
+     * Set once every project's backward pass has reached the start of the window.
+     * ran_out_of_time alone cannot say this: a backward run can finish its slice
+     * with time to spare and still have years of history left to walk.
+     */
+    backfill_complete: 0,
   }
 
   try {
@@ -63,6 +78,7 @@ export async function syncGitLab(
     ctx.log(`Syncing ${tracked.length} tracked projects`)
 
     const productionPatterns = await loadProductionPatterns(ctx)
+    let backfillDone = 0
 
     // Four at a time: fast enough for a backfill, gentle enough that GitLab does
     // not start returning 429s.
@@ -85,7 +101,13 @@ export async function syncGitLab(
       stats.pipelines += counts.pipelines
       if (counts.completed) stats.projects_completed += 1
       else stats.ran_out_of_time = 1
+      if (counts.backfillComplete) backfillDone += 1
     })
+
+    // Only meaningful when every project reported reaching the window start.
+    if (mode === 'backfill' && tracked.length > 0 && backfillDone === tracked.length) {
+      stats.backfill_complete = 1
+    }
 
     for (const { item, error } of errors) {
       stats.project_errors += 1
@@ -197,16 +219,52 @@ async function syncProject(
     deployments: 0,
     pipelines: 0,
     completed: false,
+    backfillComplete: false,
   }
 
   const mrCursorKey = `project:${project.gitlab_id}:merge_requests`
-  const since = await ctx.since(mrCursorKey, config.backfillMonths)
+  // Separate frontier for the backward pass. The forward cursor is a high-water
+  // mark and only ever moves forward, so it cannot also describe how far back a
+  // backfill has reached; conflating the two is what silently loses history.
+  const backfillCursorKey = `project:${project.gitlab_id}:merge_requests:oldest`
 
-  // Ascending order is what makes the cursor meaningful: everything before the
-  // last processed MR's updated_at is known to be written.
-  const list = await client.mergeRequests(project.gitlab_id, since)
-  list.sort((a, b) => a.updated_at.localeCompare(b.updated_at))
-  ctx.log(`${project.path_with_namespace}: ${list.length} merge requests changed since ${since}`)
+  const backwards = ctx.mode === 'backfill'
+  const windowStart = new Date()
+  windowStart.setMonth(windowStart.getMonth() - config.backfillMonths)
+
+  let since: string
+  let updatedBefore: string | undefined
+
+  if (backwards) {
+    // Newest first, walking towards the past. The frontier is where the previous
+    // backward run stopped; unset means start from now.
+    since = windowStart.toISOString()
+    updatedBefore = (await ctx.getCursor(backfillCursorKey)) ?? undefined
+    // Claim everything from this moment on for the forward cursor, so ordinary
+    // incremental runs keep the recent end fresh while the backward pass is still
+    // working through the older history.
+    if (!(await ctx.getCursor(mrCursorKey))) {
+      await ctx.setCursor(mrCursorKey, new Date().toISOString())
+    }
+  } else {
+    since = await ctx.since(mrCursorKey, config.backfillMonths)
+  }
+
+  const list = await client.mergeRequests(project.gitlab_id, since, {
+    updatedBefore,
+    sort: backwards ? 'desc' : 'asc',
+  })
+  // Process in the direction we are walking, so the cursor written mid-run always
+  // describes a contiguous span rather than an arbitrary subset.
+  list.sort((a, b) =>
+    backwards ? b.updated_at.localeCompare(a.updated_at) : a.updated_at.localeCompare(b.updated_at),
+  )
+  const truncated = list.length >= MR_PAGE_LIMIT
+  ctx.log(
+    backwards
+      ? `${project.path_with_namespace}: ${list.length} merge requests updated before ${updatedBefore ?? 'now'} (walking back to ${since})${truncated ? ' [truncated at page limit]' : ''}`
+      : `${project.path_with_namespace}: ${list.length} merge requests changed since ${since}`,
+  )
 
   const processedMrIds: string[] = []
 
@@ -354,14 +412,25 @@ async function syncProject(
     // Advance the cursor per MR so an interrupted run resumes precisely. Written
     // every few MRs rather than every one to keep the write volume sane.
     if (counts.mergeRequests % 5 === 0) {
-      await ctx.setCursor(mrCursorKey, mr.updated_at)
+      await ctx.setCursor(backwards ? backfillCursorKey : mrCursorKey, mr.updated_at)
     }
   }
 
   const lastProcessed = list[counts.mergeRequests - 1]
   const finishedAllMrs = counts.mergeRequests === list.length
 
-  if (finishedAllMrs) {
+  if (backwards) {
+    if (lastProcessed) {
+      // Oldest one reached this run becomes the next run's ceiling.
+      await ctx.setCursor(backfillCursorKey, lastProcessed.updated_at)
+    }
+    // Only a short result proves we reached the window start; a full page-limit
+    // result means there is more history beyond the truncation.
+    if (finishedAllMrs && !truncated) {
+      counts.backfillComplete = true
+      ctx.log(`${project.path_with_namespace}: reached the start of the ${config.backfillMonths}-month window`)
+    }
+  } else if (finishedAllMrs) {
     // Everything up to now is captured; the small overlap in since() covers any
     // event written while this run was in flight.
     await ctx.setCursor(mrCursorKey, new Date().toISOString())
