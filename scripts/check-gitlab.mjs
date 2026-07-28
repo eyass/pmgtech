@@ -280,7 +280,7 @@ personal one, so the integration does not break when someone leaves.
   if (unattendedDays > 1) {
     console.log(
       warn(
-        `That is a long time to leave a backfill running. Drive the first pass by hand instead — repeatedly POST /api/sync?source=gitlab&mode=backfill (it resumes from cursors), or lower BACKFILL_MONTHS.`,
+        `That is a long time to leave a backfill running. Drive the first pass by hand instead: POST /api/sync?source=gitlab&mode=backfill ONCE to open the window, then repeat with mode=incremental until ran_out_of_time is 0. Only incremental reads the stored cursor — looping on mode=backfill restarts from the oldest merge request every time and never finishes. Lowering BACKFILL_MONTHS also works.`,
       ),
     )
   }

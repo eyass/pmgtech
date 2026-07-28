@@ -82,7 +82,13 @@ export class HiBobClient {
         headers: { Authorization: `Basic ${this.auth}` },
         body: {
           showInactive: true,
-          humanReadable: 'REPLACE',
+          // APPEND, not REPLACE. REPLACE rewrites values in place, which turns
+          // work.startDate into a locale-formatted string ("20/07/2026") and
+          // loses the ISO date Postgres needs — and the resolved list values it
+          // gives are then the only copy, so there is nothing to fall back to.
+          // APPEND keeps the machine values and adds a humanReadable sibling,
+          // which is what normalisePerson below reads.
+          humanReadable: 'APPEND',
           fields: [
             'root.id',
             'root.email',
@@ -116,6 +122,19 @@ function asString(value: unknown): string | null {
   return null
 }
 
+/**
+ * Dates go into `date` columns, so only an ISO calendar date is safe to pass on.
+ * A locale-formatted value is dropped rather than guessed: "07/01/2025" is two
+ * different days depending on the tenant's locale, and silently picking one
+ * would put a wrong tenure on someone's profile.
+ */
+function asIsoDate(value: unknown): string | null {
+  const raw = asString(value)
+  if (!raw) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null
+  return Number.isNaN(Date.parse(raw)) ? null : raw
+}
+
 function normalisePerson(raw: HiBobEmployee): HiBobPerson {
   const human = raw.humanReadable ?? {}
   const work = raw.work ?? {}
@@ -138,7 +157,7 @@ function normalisePerson(raw: HiBobEmployee): HiBobPerson {
     jobTitle: asString(humanWork.title) ?? asString(work.title),
     department: asString(humanWork.department) ?? asString(work.department),
     site: asString(humanWork.site) ?? asString(work.site),
-    startDate: asString(work.startDate),
+    startDate: asIsoDate(work.startDate),
     managerEmail: asString(work.reportsTo?.email)?.toLowerCase() ?? null,
     employmentType:
       asString((human.employment as Record<string, unknown> | undefined)?.type) ??
