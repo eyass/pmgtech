@@ -53,6 +53,8 @@ export async function syncGitLab(
     pipelines: 0,
     unmatched_identities: 0,
     project_errors: 0,
+    /** Slices cut short by a per-merge-request failure; the next run retries them. */
+    mr_errors: 0,
     ran_out_of_time: 0,
     /**
      * Set once every project's backward pass has reached the start of the window.
@@ -102,6 +104,7 @@ export async function syncGitLab(
       if (counts.completed) stats.projects_completed += 1
       else stats.ran_out_of_time = 1
       if (counts.backfillComplete) backfillDone += 1
+      if (counts.stoppedOnError) stats.mr_errors += 1
     })
 
     // Only meaningful when every project reported reaching the window start.
@@ -220,6 +223,7 @@ async function syncProject(
     pipelines: 0,
     completed: false,
     backfillComplete: false,
+    stoppedOnError: null as string | null,
   }
 
   const mrCursorKey = `project:${project.gitlab_id}:merge_requests`
@@ -274,8 +278,22 @@ async function syncProject(
       break
     }
 
-    // The list view omits diff_stats, so the MR is fetched individually.
-    const mr = await client.mergeRequest(project.gitlab_id, summary.iid)
+    // One merge request failing must not discard the slice: everything written so
+    // far is real, and the cursor still points at the last one that succeeded.
+    // Ending the slice here rather than skipping ahead keeps the walk contiguous —
+    // skipping would put this merge request permanently behind the frontier — and
+    // the next run simply retries it.
+    let mr
+    try {
+      // The list view omits diff_stats, so the MR is fetched individually.
+      mr = await client.mergeRequest(project.gitlab_id, summary.iid)
+    } catch (error) {
+      counts.stoppedOnError = `!${summary.iid}: ${error instanceof Error ? error.message : String(error)}`
+      ctx.log(
+        `${project.path_with_namespace}: stopping after ${counts.mergeRequests} MRs — ${counts.stoppedOnError}`,
+      )
+      break
+    }
 
     const authorEngineerId = mr.author
       ? await identities.resolve({

@@ -95,17 +95,20 @@ export async function requestJson<T>(url: string, options: RequestOptions): Prom
       return { data, headers: response.headers }
     } catch (error) {
       lastError = error as Error
-      const isAbort = error instanceof Error && error.name === 'AbortError'
       const isIntegration = error instanceof IntegrationError
 
       // IntegrationError here means a non-retryable status; surface immediately.
       if (isIntegration) throw error
       if (attempt >= retries) break
-      if (isAbort || error instanceof TypeError) {
-        await sleep(backoffMs(attempt, null))
-        continue
-      }
-      throw error
+      // Everything else reaching this point is a transport failure — DNS, TLS,
+      // connection reset, timeout — and those are transient far more often than
+      // not. This used to allow-list AbortError and TypeError and rethrow the
+      // rest, which meant a single DNS wobble abandoned a backfill that had been
+      // running for the better part of an hour. Deterministic failures are
+      // already an IntegrationError above, so retrying the remainder is safe;
+      // a genuinely broken request still fails, just after `retries` attempts.
+      await sleep(backoffMs(attempt, null))
+      continue
     } finally {
       clearTimeout(timer)
     }
