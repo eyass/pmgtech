@@ -152,7 +152,7 @@ export async function getEngineers(): Promise<EngineerRow[]> {
   const { data, error } = await supabaseAdmin()
     .from('engineers')
     .select(
-      'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, employment_type, is_active, include_in_metrics, seniority_key, seniority_source, squad_id, squad_source, hibob_id',
+      'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, employment_type, is_active, include_in_metrics, include_in_metrics_source, seniority_key, seniority_source, squad_id, squad_source, hibob_id',
     )
     .order('full_name')
   if (error) throw new Error(`Failed to load engineers: ${error.message}`)
@@ -163,7 +163,7 @@ export async function getEngineer(id: string): Promise<EngineerRow | null> {
   const { data, error } = await supabaseAdmin()
     .from('engineers')
     .select(
-      'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, employment_type, is_active, include_in_metrics, seniority_key, seniority_source, squad_id, squad_source, hibob_id',
+      'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, employment_type, is_active, include_in_metrics, include_in_metrics_source, seniority_key, seniority_source, squad_id, squad_source, hibob_id',
     )
     .eq('id', id)
     .maybeSingle()

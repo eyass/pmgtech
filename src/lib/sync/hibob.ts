@@ -1,5 +1,6 @@
 import { hibobEnv } from '@/lib/env'
 import { HiBobClient, squadKeyFromDepartment, type HiBobPerson } from '@/lib/integrations/hibob'
+import { isNonIcTitle } from '@/lib/sync/matching'
 import { SyncContext, type SyncMode, type SyncTrigger } from '@/lib/sync/runner'
 
 /**
@@ -10,6 +11,8 @@ import { SyncContext, type SyncMode, type SyncTrigger } from '@/lib/sync/runner'
  *  - Manual overrides win. If someone set a squad or seniority by hand in the
  *    admin screen, HiBob does not overwrite it on the next run.
  *  - Non-engineering departments are skipped so the directory stays the eng org.
+ *  - Managers and leadership default out of per-engineer rates (include_in_metrics),
+ *    which changes the denominator only — their own work still counts. See 0017.
  *  - Leavers are marked inactive rather than deleted, so their historical
  *    contribution stays attributed in past quarters.
  */
@@ -54,6 +57,7 @@ export async function syncHiBob(
       // Respect manual overrides set in the admin screen.
       const keepManualSquad = prior?.squad_source === 'manual'
       const keepManualSeniority = prior?.seniority_source === 'manual'
+      const keepManualMetrics = prior?.include_in_metrics_source === 'manual'
 
       const row: Record<string, unknown> = {
         hibob_id: person.hibobId,
@@ -76,6 +80,13 @@ export async function syncHiBob(
       if (!keepManualSeniority) {
         row.seniority_key = seniorityKey
         row.seniority_source = 'hibob'
+      }
+      if (!keepManualMetrics) {
+        // Managers and leadership stay in the directory but out of per-engineer rates.
+        // This only affects the denominator — their merge requests, reviews and commits
+        // still count towards their squad. See migration 0017.
+        row.include_in_metrics = !isNonIcTitle(person.jobTitle)
+        row.include_in_metrics_source = 'auto'
       }
 
       if (prior) {
@@ -164,7 +175,9 @@ async function loadSquadIds(ctx: SyncContext): Promise<Map<string, string>> {
 async function loadExistingEngineers(ctx: SyncContext) {
   const { data, error } = await ctx.db
     .from('engineers')
-    .select('id, email, hibob_id, squad_id, squad_source, seniority_source')
+    .select(
+      'id, email, hibob_id, squad_id, squad_source, seniority_source, include_in_metrics_source',
+    )
   if (error) throw new Error(`Failed to load engineers: ${error.message}`)
 
   type Row = {
@@ -174,6 +187,7 @@ async function loadExistingEngineers(ctx: SyncContext) {
     squad_id: string | null
     squad_source: string
     seniority_source: string
+    include_in_metrics_source: string
   }
 
   const byEmail = new Map<string, Row>()

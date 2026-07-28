@@ -388,7 +388,7 @@ export default async function AdminPage() {
       <section>
         <SectionHeading
           title="Engineers"
-          hint="Squad and level come from HiBob. Overriding either here pins it, and future HiBob syncs will leave it alone."
+          hint="Squad, level and metric inclusion come from HiBob. Overriding any of them here pins it, and future HiBob syncs will leave it alone."
         />
         <Table
           empty="No engineers yet. Run the HiBob sync to build the directory."
@@ -398,7 +398,9 @@ export default async function AdminPage() {
               <Th>HiBob title</Th>
               <Th>Squad</Th>
               <Th>Level</Th>
-              <Th align="right">In metrics</Th>
+              <Th align="right" title="Whether this person counts towards headcount and per-engineer rates. Their merge requests, reviews and commits count towards their squad either way.">
+                In metrics
+              </Th>
               <Th align="right">Automation</Th>
               <Th align="right">Status</Th>
             </>
@@ -458,6 +460,15 @@ export default async function AdminPage() {
                     title="Excluded people keep their history but drop out of headcount and per-engineer rates"
                   />
                 )}
+                {/* Say which excluded people were excluded by the title rule rather than by
+                    someone's decision, so a wrong default is visibly a default. */}
+                {!engineer.include_in_metrics ? (
+                  <div className="mt-1 text-[11px] text-[var(--color-muted)]">
+                    {engineer.include_in_metrics_source === 'manual'
+                      ? 'set by hand'
+                      : 'non-IC title'}
+                  </div>
+                ) : null}
               </Td>
               <Td align="right">
                 {readOnly ? (
@@ -479,6 +490,14 @@ export default async function AdminPage() {
             </tr>
           ))}
         </Table>
+        <MetricNote>
+          <strong>In metrics</strong> controls the denominator, not the data. Managers and
+          leadership default to excluded from their HiBob title — an engineering manager who
+          ships two merge requests a month is doing their job, and averaging them in with eight
+          ICs makes the squad look 20% slower than it is. Nothing they shipped is dropped: their
+          merge requests, reviews and commits still count towards their squad and still appear on
+          their own profile. Toggling it here pins the choice against later syncs.
+        </MetricNote>
       </section>
 
       {/* --- Jira boards ------------------------------------------------------ */}

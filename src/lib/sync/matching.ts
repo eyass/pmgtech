@@ -110,6 +110,36 @@ export function isPersonalBoard(name: string, patterns: string[]): boolean {
   return patterns.some((p) => p.length > 0 && n.includes(p.toLowerCase()))
 }
 
+/**
+ * Whether a job title describes a role whose output is not individual delivery.
+ *
+ * Managers and leadership belong in the directory and their own work should still count
+ * towards their squad — what they should not do is sit in the denominator of a
+ * per-engineer rate. An engineering manager who ships two merge requests a month is doing
+ * their job well, and averaging them in with eight ICs makes the squad look 20% slower
+ * than it is. With four engineering managers, a CTO and a head of DevOps among twenty
+ * heads here, that is a third of the denominator.
+ *
+ * Matching is on the title, so it is deliberately narrow: "Head of", "Director",
+ * "Manager", "VP", "Chief"/"C?O". A "Senior Software Engineer" or "Staff Engineer" is an
+ * IC however senior, and an "Engineering Manager" is not — the word "Engineer" appearing
+ * in the title is not the test.
+ */
+export function isNonIcTitle(title: string | null | undefined): boolean {
+  if (!title) return false
+  const t = title.toLowerCase()
+  // "Product Manager" and "Engineering Manager" both qualify; "Manager" in isolation is
+  // enough, since anything managing is not an individual contributor here.
+  return (
+    /\bmanager\b/.test(t) ||
+    /\bhead of\b/.test(t) ||
+    /\bdirector\b/.test(t) ||
+    /\bvp\b|\bvice president\b/.test(t) ||
+    /\bchief\b/.test(t) ||
+    /^(cto|ceo|coo|cpo|cio)\b/.test(t)
+  )
+}
+
 // --- commit bridge -----------------------------------------------------------------
 //
 // GitLab reports a merge request's author as a numeric user id and, for most accounts

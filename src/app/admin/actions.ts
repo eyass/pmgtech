@@ -80,7 +80,9 @@ export async function toggleEngineerMetrics(formData: FormData): Promise<ActionR
 
     const { error } = await supabaseAdmin()
       .from('engineers')
-      .update({ include_in_metrics: include })
+      // Recorded as a manual choice so the HiBob sync's title-based default (managers and
+      // leadership out of per-engineer rates) never overwrites it on a later run.
+      .update({ include_in_metrics: include, include_in_metrics_source: 'manual' })
       .eq('id', engineerId)
     if (error) throw new Error(error.message)
 

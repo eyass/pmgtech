@@ -7,6 +7,7 @@ import {
   dedupeByConflictKey,
   hasLeft,
   isMachineEmail,
+  isNonIcTitle,
   isPersonalBoard,
   isProductionEnvironment,
   isUnroutableEmail,
@@ -181,6 +182,48 @@ describe('dedupeByConflictKey', () => {
       dedupeByConflictKey(rows, 'a').map((r) => r.a),
       [3, 1, 2],
     )
+  })
+})
+
+describe('isNonIcTitle', () => {
+  it('recognises the non-IC titles in this directory', () => {
+    for (const title of ['Engineering Manager', 'CTO', 'Head of DevOps']) {
+      assert.equal(isNonIcTitle(title), true, title)
+    }
+  })
+
+  it('leaves every IC title alone, however senior', () => {
+    // Seniority is not the test — a Staff Engineer is still an individual contributor.
+    for (const title of [
+      'Senior Software Engineer',
+      'Software Engineer',
+      'Staff Engineer',
+      'DevOps/SRE Engineer',
+      'Mobile Engineer',
+      'Product Exploration Associate',
+      'Principal Engineer',
+    ]) {
+      assert.equal(isNonIcTitle(title), false, title)
+    }
+  })
+
+  it('catches other shapes of the same role', () => {
+    for (const title of [
+      'Director of Engineering',
+      'VP Engineering',
+      'Vice President, Product',
+      'Chief Technology Officer',
+      'Product Manager',
+      'Head of Data',
+    ]) {
+      assert.equal(isNonIcTitle(title), true, title)
+    }
+  })
+
+  it('is false for a missing title rather than guessing', () => {
+    assert.equal(isNonIcTitle(null), false)
+    assert.equal(isNonIcTitle(''), false)
+    assert.equal(isNonIcTitle(undefined), false)
   })
 })
 

@@ -237,6 +237,8 @@ export interface EngineerRow {
   employment_type: string | null
   is_active: boolean
   include_in_metrics: boolean
+  /** 'auto' = derived from the job title by the sync; 'manual' = set in the admin screen. */
+  include_in_metrics_source: 'auto' | 'manual'
   seniority_key: string
   seniority_source: string
   squad_id: string | null
