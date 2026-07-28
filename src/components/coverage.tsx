@@ -2,7 +2,51 @@ import Link from 'next/link'
 
 import { Card } from '@/components/ui'
 import { nf, pct } from '@/lib/format'
+import type { SyncAlert } from '@/lib/queries'
 import type { OrgKpis } from '@/lib/types/metrics'
+
+/**
+ * Sync problems, stated on the page rather than left in the admin screen.
+ *
+ * A broken sync does not look broken on a dashboard — it looks like a quiet week. Every
+ * number falls together, in a believable direction, and the natural reading is that the
+ * team slowed down. So a stale or non-converging source has to say so next to the numbers
+ * it is making wrong.
+ */
+export function SyncAlertBanner({ alerts }: { alerts: SyncAlert[] }) {
+  if (alerts.length === 0) return null
+  const worst = alerts.some((a) => a.level === 'bad') ? 'bad' : 'warn'
+
+  return (
+    <Card
+      className={
+        worst === 'bad'
+          ? 'border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/30'
+          : 'border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30'
+      }
+    >
+      <p className="text-xs leading-relaxed">
+        <strong>
+          {worst === 'bad' ? 'Data may be out of date.' : 'One source is behind.'}
+        </strong>{' '}
+        A sync that is not running does not make the numbers look wrong — it makes them look
+        like a quiet week.
+      </p>
+      <ul className="mt-2 space-y-0.5 text-xs">
+        {alerts.map((alert, i) => (
+          <li key={`${alert.source}-${i}`}>
+            <span className="font-medium capitalize">{alert.source}</span>: {alert.message}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs">
+        <Link href="/admin" className="underline">
+          Sync history and manual runs
+        </Link>
+      </p>
+    </Card>
+  )
+}
 
 /**
  * How much of the collected work is attributed to a person.

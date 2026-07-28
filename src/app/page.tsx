@@ -1,7 +1,7 @@
 import Link from 'next/link'
 
 import { SquadBarChart, TrendChart } from '@/components/charts'
-import { AttributionBanner } from '@/components/coverage'
+import { AttributionBanner, SyncAlertBanner } from '@/components/coverage'
 import { SetupNotice } from '@/components/setup-notice'
 import { Bar, Card, Kpi, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { integrationStatus } from '@/lib/env'
@@ -12,6 +12,7 @@ import {
   getDeliveryTrend,
   getOrgKpis,
   getSquadScorecards,
+  getSyncAlerts,
   PERIODS,
   resolvePeriod,
 } from '@/lib/queries'
@@ -26,12 +27,13 @@ export default async function OverviewPage({
   const { period } = await searchParams
   const { key, range, bucket } = resolvePeriod(period)
 
-  const [freshness, kpis, squads, trend, attention] = await Promise.all([
+  const [freshness, kpis, squads, trend, attention, syncAlerts] = await Promise.all([
     getDataFreshness(),
     getOrgKpis(range),
     getSquadScorecards(range),
     getDeliveryTrend(range, bucket),
     getAttentionList(undefined, 8),
+    getSyncAlerts(),
   ])
 
   const squadKeys = squads.map((s) => s.squad_key)
@@ -52,7 +54,9 @@ export default async function OverviewPage({
 
       {!freshness.hasAnyData ? (
         <SetupNotice integrations={integrationStatus()} freshness={freshness} />
-      ) : null}
+      ) : (
+        <SyncAlertBanner alerts={syncAlerts} />
+      )}
 
       {/* --- headline KPIs ---------------------------------------------------- */}
 
@@ -157,7 +161,7 @@ export default async function OverviewPage({
       <section>
         <SectionHeading
           title="Squads"
-          hint="Work is attributed to the squad of the person who did it, falling back to the squad that owns the repository."
+          hint="Work is attributed to the squad of the person who did it. The repository fallback does nothing here — this org has one monorepo that several squads share — so an unassigned engineer's work reaches no squad at all."
           action={
             <Link href="/squads" className="text-sm text-[var(--color-muted)] hover:underline">
               Compare in detail →

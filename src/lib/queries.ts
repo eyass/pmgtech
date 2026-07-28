@@ -341,6 +341,99 @@ export async function getAssessmentSummary(
 }
 
 /** Whether any data has landed yet — drives the empty state on first deploy. */
+export type SyncAlertLevel = 'warn' | 'bad'
+
+export interface SyncAlert {
+  source: string
+  level: SyncAlertLevel
+  message: string
+}
+
+/**
+ * Sync problems worth interrupting someone about.
+ *
+ * A broken sync does not look broken on a dashboard — it looks like a quiet week. Deploy
+ * frequency falls, throughput dips, and every number is wrong in the same believable
+ * direction. So the failure modes are checked explicitly rather than left to be noticed:
+ *
+ *  - a source whose most recent run errored;
+ *  - a source with no successful run in over a day, including one that has never had one;
+ *  - a source stuck in 'partial' for several consecutive runs, which is the one that
+ *    actually happened: the Jira backfill spent eight runs re-processing the same 560
+ *    issues because it restarted at the window start each time, and nothing said so.
+ */
+export async function getSyncAlerts(): Promise<SyncAlert[]> {
+  const { data, error } = await supabaseAdmin()
+    .from('sync_runs')
+    .select('source, mode, status, started_at, finished_at, stats')
+    .order('started_at', { ascending: false })
+    .limit(60)
+  if (error) throw new Error(`Failed to load sync runs: ${error.message}`)
+
+  const runs = (data ?? []) as {
+    source: string
+    mode: string
+    status: string
+    started_at: string
+    finished_at: string | null
+    stats: Record<string, unknown> | null
+  }[]
+
+  const alerts: SyncAlert[] = []
+  const sources = ['gitlab', 'jira', 'hibob']
+
+  for (const source of sources) {
+    const forSource = runs.filter((r) => r.source === source || r.source === 'all')
+    // A run still in flight says nothing about health either way.
+    const finished = forSource.filter((r) => r.status !== 'running')
+    if (finished.length === 0) continue
+
+    const latest = finished[0]
+    if (latest.status === 'error') {
+      alerts.push({ source, level: 'bad', message: 'the last run failed' })
+      continue
+    }
+
+    const lastSuccess = finished.find((r) => r.status === 'success')
+    const hoursSince = lastSuccess?.finished_at
+      ? (Date.now() - new Date(lastSuccess.finished_at).getTime()) / 3_600_000
+      : null
+
+    if (hoursSince === null) {
+      // Every metric from this source is as old as whatever the partial runs managed.
+      alerts.push({
+        source,
+        level: 'bad',
+        message: `no run has completed yet — ${finished.length} attempt${
+          finished.length === 1 ? '' : 's'
+        } stopped early`,
+      })
+    } else if (hoursSince > 24) {
+      alerts.push({
+        source,
+        level: hoursSince > 72 ? 'bad' : 'warn',
+        message: `last completed ${Math.round(hoursSince)} hours ago`,
+      })
+    }
+
+    // Consecutive partials mean the walk is not converging, even while data arrives.
+    let consecutivePartial = 0
+    for (const run of finished) {
+      if (run.status !== 'partial') break
+      consecutivePartial += 1
+    }
+    if (consecutivePartial >= 3) {
+      alerts.push({
+        source,
+        level: 'warn',
+        message: `${consecutivePartial} runs in a row stopped early — the backfill may not be advancing`,
+      })
+    }
+  }
+
+  return alerts
+}
+
 export async function getDataFreshness() {
   const db = supabaseAdmin()
   const [engineers, mrs, issues, lastRun] = await Promise.all([

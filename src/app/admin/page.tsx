@@ -9,6 +9,7 @@ import {
   SquadSelect,
   ToggleButton,
 } from '@/components/admin-forms'
+import { SyncAlertBanner } from '@/components/coverage'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { currentUser } from '@/lib/auth'
 import { integrationStatus } from '@/lib/env'
@@ -20,6 +21,7 @@ import {
   getSquads,
   getBridgeSuggestions,
   getSquadSuggestions,
+  getSyncAlerts,
   getSyncRuns,
   getUnmatchedIdentities,
 } from '@/lib/queries'
@@ -47,18 +49,29 @@ export default async function AdminPage() {
   const user = await currentUser()
   const readOnly = !user?.isAdmin
 
-  const [squads, engineers, projects, boards, runs, unmatched, levels, bridge, squadHints] =
-    await Promise.all([
-      getSquads(),
-      getEngineers(),
-      getGitLabProjects(),
-      getJiraBoards(),
-      getSyncRuns(15),
-      getUnmatchedIdentities(),
-      getSeniorityLevels(),
-      getBridgeSuggestions(),
-      getSquadSuggestions(),
-    ])
+  const [
+    squads,
+    engineers,
+    projects,
+    boards,
+    runs,
+    unmatched,
+    levels,
+    bridge,
+    squadHints,
+    syncAlerts,
+  ] = await Promise.all([
+    getSquads(),
+    getEngineers(),
+    getGitLabProjects(),
+    getJiraBoards(),
+    getSyncRuns(15),
+    getUnmatchedIdentities(),
+    getSeniorityLevels(),
+    getBridgeSuggestions(),
+    getSquadSuggestions(),
+    getSyncAlerts(),
+  ])
 
   const status = integrationStatus()
   const squadOptions = squads.map((s) => ({ id: s.id, name: s.name }))
@@ -75,6 +88,8 @@ export default async function AdminPage() {
           {readOnly ? ' You have viewer access, so changes are disabled.' : ''}
         </p>
       </div>
+
+      <SyncAlertBanner alerts={syncAlerts} />
 
       {/* --- integrations ----------------------------------------------------- */}
 

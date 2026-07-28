@@ -1,5 +1,6 @@
 import { appEnv, jiraEnv } from '@/lib/env'
 import {
+  JIRA_ISSUE_PAGE_CAP,
   JiraClient,
   looksLikeProductionBug,
   type JiraChangelogEntry,
@@ -7,6 +8,7 @@ import {
   type JiraSprint,
 } from '@/lib/integrations/jira'
 import { IdentityResolver } from '@/lib/sync/identity'
+import { planCursorAdvance } from '@/lib/sync/pagination'
 import { SyncContext, upsertInChunks, type SyncMode, type SyncTrigger } from '@/lib/sync/runner'
 
 /**
@@ -35,6 +37,8 @@ export async function syncJira(
     issue_sprint_links: 0,
     unmatched_identities: 0,
     ran_out_of_time: 0,
+    /** Set when the forward walk reached the present with nothing left behind. */
+    backfill_complete: 0,
   }
 
   try {
@@ -169,7 +173,20 @@ export async function syncJira(
     ctx.log(`Loaded ${statusCategories.size} status definitions`)
 
     const cursorKey = `issues:${env.projectKeys.join('+')}`
-    const since = await ctx.since(cursorKey, backfillMonths)
+
+    // A backfill honours a stored cursor too, which ctx.since() deliberately does not.
+    // The issue walk is forward and ordered `updated ASC`, so resuming from the cursor
+    // cannot skip anything — and without it a backfill restarts at the window start on
+    // every run. That is not theoretical: with roughly 560 issues each costing an upsert
+    // plus a changelog fetch, a full pass does not fit in one time budget, so eight
+    // consecutive runs each spent their whole 270s re-processing the same issues and the
+    // walk never advanced by one.
+    const storedCursor = await ctx.getCursor(cursorKey)
+    const since =
+      mode === 'backfill' && storedCursor
+        ? new Date(new Date(storedCursor).getTime() - 30 * 60_000).toISOString()
+        : await ctx.since(cursorKey, backfillMonths)
+
     const jql = buildIssueJql(env.projectKeys, since)
     ctx.log(`Searching issues: ${jql}`)
 
@@ -177,6 +194,9 @@ export async function syncJira(
     ctx.log(`Jira returned ${issues.length} issues`)
 
     const processedIssueIds: string[] = []
+    // The `updated` timestamp of the last issue actually written, which is where the next
+    // run has to resume from when this one stops early.
+    let lastUpdatedProcessed: string | null = null
 
     for (const issue of issues) {
       if (ctx.outOfTime) {
@@ -254,6 +274,8 @@ export async function syncJira(
       const issueId = (upserted as { id: string }).id
       processedIssueIds.push(issueId)
       stats.issues += 1
+      // Recorded after the write, so a cursor never claims an issue that was not stored.
+      if (issue.fields.updated) lastUpdatedProcessed = issue.fields.updated
 
       // --- status transitions -------------------------------------------------
 
@@ -325,9 +347,19 @@ export async function syncJira(
     const { data: linked } = await ctx.db.rpc('link_mrs_to_issues')
     ctx.log(`Linked ${linked ?? 0} merge-request/issue pairs`)
 
-    if (stats.ran_out_of_time === 0) {
-      await ctx.setCursor(cursorKey, new Date().toISOString())
+    // Same rule as the GitLab walks, and the same reason: a forward walk may only jump
+    // its cursor to now() when nothing was left behind. A run that stopped early has to
+    // resume from the last issue it actually wrote, or its work is repeated forever.
+    const advance = planCursorAdvance({
+      direction: 'forward',
+      lastProcessed: lastUpdatedProcessed,
+      truncated: issues.length >= JIRA_ISSUE_PAGE_CAP,
+      processedWholeBatch: stats.ran_out_of_time === 0,
+    })
+    if (advance.forwardCursor) {
+      await ctx.setCursor(cursorKey, advance.forwardCursor)
     }
+    stats.backfill_complete = advance.reachedWindowStart ? 1 : 0
 
     const status = stats.ran_out_of_time === 1 ? 'partial' : 'success'
     await ctx.finish(status, stats)

@@ -81,6 +81,15 @@ export interface JiraIssue {
   changelog?: { histories: JiraChangelogEntry[] }
 }
 
+/**
+ * Issue-search paging limits. Exported because the sync has to know when a listing was
+ * truncated: a truncated forward walk must not advance its cursor to now(), or everything
+ * the page cap dropped is never fetched again.
+ */
+export const JIRA_ISSUE_PAGE_SIZE = 100
+export const JIRA_ISSUE_MAX_PAGES = 100
+export const JIRA_ISSUE_PAGE_CAP = JIRA_ISSUE_PAGE_SIZE * JIRA_ISSUE_MAX_PAGES
+
 export class JiraClient {
   private readonly host: string
   private readonly auth: string
@@ -205,7 +214,7 @@ export class JiraClient {
    * requested inline so status history and sprint moves arrive in the same pass
    * instead of one extra call per issue.
    */
-  async searchIssues(jql: string, maxPages = 100): Promise<JiraIssue[]> {
+  async searchIssues(jql: string, maxPages = JIRA_ISSUE_MAX_PAGES): Promise<JiraIssue[]> {
     const fields = [
       'summary',
       'created',
