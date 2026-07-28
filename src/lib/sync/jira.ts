@@ -27,6 +27,8 @@ export async function syncJira(
   const stats = {
     projects: 0,
     boards: 0,
+    /** Boards left out: personal views, and boards owned by unconfigured projects. */
+    boards_ignored: 0,
     sprints: 0,
     issues: 0,
     transitions: 0,
@@ -68,22 +70,51 @@ export async function syncJira(
 
     // --- boards and sprints ---------------------------------------------------
 
-    const boards = await client.boards(projects.map((p) => p.key))
-    ctx.log(`Found ${boards.length} boards`)
-    if (boards.length > 0) {
+    const configuredKeys = new Set(projects.map((p) => p.key))
+    const discovered = await client.boards(projects.map((p) => p.key))
+
+    // Jira's board endpoint takes projectKeyOrId but answers with boards that merely
+    // contain issues from that project, so a board owned by an unconfigured project
+    // comes back too. location.projectKey is the board's own project, and that is
+    // what decides whether it belongs here.
+    const owned = discovered.filter(
+      (b) => b.location?.projectKey && configuredKeys.has(b.location.projectKey),
+    )
+    const foreign = discovered.length - owned.length
+    if (foreign > 0) {
+      ctx.log(`Ignored ${foreign} board(s) owned by projects outside JIRA_PROJECT_KEYS`)
+    }
+
+    // Personal boards are one person's view of a project, not the team's board, so
+    // they must not carry sprint metrics for a squad.
+    const ignorePatterns = await loadIgnoredBoardPatterns(ctx)
+    const isIgnored = (name: string) => {
+      const n = name.toLowerCase()
+      return ignorePatterns.some((pattern) => n.includes(pattern))
+    }
+
+    const boards = owned.filter((b) => !isIgnored(b.name))
+    const ignored = owned.filter((b) => isIgnored(b.name))
+    if (ignored.length > 0) {
+      ctx.log(`Not tracking ${ignored.length} personal board(s): ${ignored.map((b) => b.name).join(', ')}`)
+    }
+
+    if (owned.length > 0) {
       await upsertInChunks(
         ctx.db,
         'jira_boards',
-        boards.map((b) => ({
+        owned.map((b) => ({
           jira_id: String(b.id),
           name: b.name,
           board_type: b.type ?? null,
           project_key: b.location?.projectKey ?? null,
+          is_tracked: !isIgnored(b.name),
         })),
         'jira_id',
       )
     }
     stats.boards = boards.length
+    stats.boards_ignored = ignored.length + foreign
 
     const boardIdMap = await loadBoardIds(ctx)
     const sprintsByJiraId = new Map<string, { id: string; startDate: string | null; completeDate: string | null }>()
@@ -311,6 +342,21 @@ interface BoardRef {
   id: string
   squadId: string | null
   isTracked: boolean
+}
+
+/**
+ * Board-name substrings that mark a board as one person's view rather than a team's.
+ * In app_settings so a new naming habit does not need a deploy.
+ */
+async function loadIgnoredBoardPatterns(ctx: SyncContext): Promise<string[]> {
+  const { data } = await ctx.db
+    .from('app_settings')
+    .select('value')
+    .eq('key', 'jira_ignored_board_patterns')
+    .maybeSingle()
+  const value = (data as { value: unknown } | null)?.value
+  const patterns = Array.isArray(value) ? (value as string[]) : ["personal board", "'s board"]
+  return patterns.map((p) => p.toLowerCase()).filter((p) => p.length > 0)
 }
 
 async function loadBoardIds(ctx: SyncContext): Promise<Map<string, BoardRef>> {
