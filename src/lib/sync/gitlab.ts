@@ -9,6 +9,7 @@ import {
   type GitLabUser,
 } from '@/lib/integrations/gitlab'
 import { IdentityResolver } from '@/lib/sync/identity'
+import { isProductionEnvironment } from '@/lib/sync/matching'
 import {
   mapLimit,
   SyncContext,
@@ -266,36 +267,6 @@ async function loadProductionPatterns(ctx: SyncContext): Promise<string[]> {
   return Array.isArray(value) ? (value as string[]) : ['production', 'prod', 'live']
 }
 
-/**
- * Whether a GitLab environment is production.
- *
- * A plain substring test is not enough: this org has environments called
- * `nonprod-grafana-alloy-testing-*`, and "nonprod" contains "prod". Those were
- * being flagged as production, and were staying out of the DORA numbers only
- * because none had reached a terminal status yet — the first successful one would
- * have quietly inflated deploy frequency and skewed change failure rate and MTTR.
- *
- * So the match has to start on a word boundary. `prod-client-x` and
- * `p4h-prod-server-x` qualify; `nonprod-x` does not. A pattern followed by more
- * letters is still fine — "production" is production.
- */
-function isProductionEnvironment(name: string, patterns: string[]): boolean {
-  const n = name.toLowerCase()
-  return patterns.some((pattern) => {
-    const needle = pattern.toLowerCase()
-    if (needle.length === 0) return false
-    for (let from = 0; ; ) {
-      const idx = n.indexOf(needle, from)
-      if (idx === -1) return false
-      const precededByLetter = idx > 0 && /[a-z]/.test(n[idx - 1])
-      // "non" immediately before the match negates it, whether or not a separator
-      // sits between them: nonprod, non-prod and non_prod all mean the same thing.
-      const negated = /(^|[-_./])non$/.test(n.slice(0, idx).replace(/[-_./]$/, ''))
-      if (!precededByLetter && !negated) return true
-      from = idx + 1
-    }
-  })
-}
 
 async function syncProject(
   ctx: SyncContext,

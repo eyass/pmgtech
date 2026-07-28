@@ -1,5 +1,6 @@
 import { hibobEnv } from '@/lib/env'
 import { IntegrationError, requestJson } from '@/lib/integrations/http'
+import { asIsoDate, hasLeft } from '@/lib/sync/matching'
 
 /**
  * HiBob client. Uses the service-user credentials (id + token, basic auth)
@@ -122,18 +123,6 @@ function asString(value: unknown): string | null {
   return null
 }
 
-/**
- * Dates go into `date` columns, so only an ISO calendar date is safe to pass on.
- * A locale-formatted value is dropped rather than guessed: "07/01/2025" is two
- * different days depending on the tenant's locale, and silently picking one
- * would put a wrong tenure on someone's profile.
- */
-function asIsoDate(value: unknown): string | null {
-  const raw = asString(value)
-  if (!raw) return null
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null
-  return Number.isNaN(Date.parse(raw)) ? null : raw
-}
 
 function normalisePerson(raw: HiBobEmployee): HiBobPerson {
   const human = raw.humanReadable ?? {}
@@ -147,15 +136,7 @@ function normalisePerson(raw: HiBobEmployee): HiBobPerson {
   const fullName = asString(raw.displayName) ?? (composedName.length > 0 ? composedName : 'Unknown')
 
   const status = (raw.internal?.status ?? raw.internal?.lifecycleStatus ?? '').toLowerCase()
-
-  // A termination date in the future is a notice period, not a departure: the
-  // person is still employed and still shipping, and treating them as inactive
-  // would drop them out of v_engineers and erase them from their squad's numbers
-  // weeks before they actually leave.
-  const terminationAt = raw.internal?.terminationDate
-    ? Date.parse(String(raw.internal.terminationDate))
-    : NaN
-  const terminated = !Number.isNaN(terminationAt) && terminationAt <= Date.now()
+  const terminated = hasLeft(raw.internal?.terminationDate)
 
   return {
     hibobId: String(raw.id),

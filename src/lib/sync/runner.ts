@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { supabaseAdmin } from '@/lib/supabase/admin'
+import { dedupeByConflictKey } from '@/lib/sync/matching'
 
 export type SyncSource = 'gitlab' | 'jira' | 'hibob' | 'all'
 export type SyncMode = 'incremental' | 'backfill'
@@ -130,23 +131,10 @@ export async function upsertInChunks(
   onConflict: string,
   chunkSize = 500,
 ): Promise<number> {
-  // Postgres refuses to touch the same row twice in one INSERT .. ON CONFLICT, so
-  // a batch containing two rows with the same conflict key fails outright with
-  // "cannot affect row a second time" — and takes the whole sync down with it.
-  // Upstream APIs do repeat records (the same GitLab pipeline can appear under
-  // more than one ref, and paged listings overlap), so deduplicate here rather
-  // than trusting every caller to have done it. Last occurrence wins: rows arrive
-  // in listing order, so the later one is the fresher copy.
-  const keyColumns = onConflict.split(',').map((c) => c.trim()).filter(Boolean)
-  const deduped = Array.from(
-    rows
-      .reduce((acc, row) => {
-        const key = JSON.stringify(keyColumns.map((c) => row[c] ?? null))
-        acc.set(key, row)
-        return acc
-      }, new Map<string, Record<string, unknown>>())
-      .values(),
-  )
+  // Postgres refuses to touch the same row twice in one INSERT .. ON CONFLICT, so a
+  // batch holding two rows with the same conflict key fails outright and takes the
+  // sync down with it. See dedupeByConflictKey for why this cannot be left to callers.
+  const deduped = dedupeByConflictKey(rows, onConflict)
 
   let written = 0
   for (let i = 0; i < deduped.length; i += chunkSize) {
