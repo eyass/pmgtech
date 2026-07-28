@@ -2,6 +2,7 @@ import Link from 'next/link'
 
 import {
   CreateEngineerForm,
+  LinkBridgeForm,
   LinkIdentityForm,
   RunSyncButtons,
   SenioritySelect,
@@ -18,6 +19,7 @@ import {
   getJiraBoards,
   getSquads,
   getSyncRuns,
+  getBridgeSuggestions,
   getUnmatchedIdentities,
 } from '@/lib/queries'
 import { supabaseAdmin } from '@/lib/supabase/admin'
@@ -25,7 +27,9 @@ import { supabaseAdmin } from '@/lib/supabase/admin'
 import {
   createEngineer,
   dismissIdentity,
+  linkBridgeCandidate,
   linkIdentity,
+  markBridgeCandidateAsBot,
   markEngineerAsBot,
   markIdentityAsBot,
   setBoardSquad,
@@ -42,15 +46,17 @@ export default async function AdminPage() {
   const user = await currentUser()
   const readOnly = !user?.isAdmin
 
-  const [squads, engineers, projects, boards, runs, unmatched, levels] = await Promise.all([
-    getSquads(),
-    getEngineers(),
-    getGitLabProjects(),
-    getJiraBoards(),
-    getSyncRuns(15),
-    getUnmatchedIdentities(),
-    getSeniorityLevels(),
-  ])
+  const [squads, engineers, projects, boards, runs, unmatched, levels, bridge] =
+    await Promise.all([
+      getSquads(),
+      getEngineers(),
+      getGitLabProjects(),
+      getJiraBoards(),
+      getSyncRuns(15),
+      getUnmatchedIdentities(),
+      getSeniorityLevels(),
+      getBridgeSuggestions(),
+    ])
 
   const status = integrationStatus()
   const squadOptions = squads.map((s) => ({ id: s.id, name: s.name }))
@@ -115,6 +121,117 @@ export default async function AdminPage() {
               waiting for the cron) walks steadily through the history without duplicating work.
             </MetricNote>
           </Card>
+        </section>
+      ) : null}
+
+      {/* --- commit bridge suggestions ---------------------------------------- */}
+
+      {bridge.length > 0 ? (
+        <section>
+          <SectionHeading
+            title="Suggested links from commit history"
+            hint="GitLab exposes no email for most accounts here, but the commits inside their merge requests do. Where that evidence was unambiguous the sync already linked the account; these are the ones it would not act on alone."
+          />
+          <Table
+            empty="Nothing to review."
+            head={
+              <>
+                <Th>GitLab account</Th>
+                <Th>Dominant commit author</Th>
+                <Th align="right" title="Merge requests where this email authored the most commits, out of all their merge requests">
+                  Evidence
+                </Th>
+                <Th>Why it needs a look</Th>
+                <Th>Action</Th>
+              </>
+            }
+          >
+            {bridge.map((row) => (
+              <tr key={`${row.provider}:${row.externalId}`}>
+                <Td>
+                  {row.displayName ?? row.handle ?? '—'}
+                  <div className="font-mono text-xs text-[var(--color-muted)]">
+                    {row.handle ? `${row.handle} · ` : ''}
+                    {row.externalId}
+                  </div>
+                </Td>
+                <Td className="text-xs">
+                  <span className="font-mono">{row.email}</span>
+                  {row.engineerName ? (
+                    <div className="text-[var(--color-muted)]">{row.engineerName}</div>
+                  ) : (
+                    <div className="text-[var(--color-muted)]">no engineer with this address</div>
+                  )}
+                </Td>
+                <Td align="right" numeric>
+                  {nf(row.mrsWon)}/{nf(row.mrs)} MRs
+                  <div className="text-xs text-[var(--color-muted)]">{nf(row.commits)} commits</div>
+                </Td>
+                <Td className="max-w-sm text-xs text-[var(--color-muted)]">
+                  {row.verdict.reason}
+                </Td>
+                <Td>
+                  {readOnly ? (
+                    <span className="text-xs text-[var(--color-muted)]">admin only</span>
+                  ) : row.verdict.action === 'suggest-bot' ? (
+                    <ToggleButton
+                      action={markBridgeCandidateAsBot}
+                      fields={{
+                        provider: row.provider,
+                        externalId: row.externalId,
+                        label: row.displayName ?? row.handle ?? row.externalId,
+                      }}
+                      label="It's a bot"
+                      title="Exclude this account from metrics. Its merge requests stop counting against attribution coverage."
+                    />
+                  ) : row.verdict.action === 'suggest-link' ? (
+                    <ToggleButton
+                      action={linkBridgeCandidate}
+                      fields={{
+                        provider: row.provider,
+                        externalId: row.externalId,
+                        engineerId: row.verdict.engineerId,
+                        handle: row.handle ?? row.displayName ?? '',
+                      }}
+                      label={`Link to ${row.engineerName ?? 'engineer'}`}
+                      title="Write the link and re-attribute their history"
+                    />
+                  ) : row.verdict.action === 'suggest-manual' ? (
+                    <LinkBridgeForm
+                      action={linkBridgeCandidate}
+                      provider={row.provider}
+                      externalId={row.externalId}
+                      handle={row.handle ?? row.displayName ?? ''}
+                      engineers={engineerOptions}
+                    />
+                  ) : (
+                    <div className="space-y-1">
+                      <LinkBridgeForm
+                        action={linkBridgeCandidate}
+                        provider={row.provider}
+                        externalId={row.externalId}
+                        handle={row.handle ?? row.displayName ?? ''}
+                        engineers={engineerOptions}
+                      />
+                      <p className="text-xs text-[var(--color-muted)]">
+                        Or add them under “Add an engineer” with this address, and their history
+                        attributes on its own.
+                      </p>
+                    </div>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </Table>
+          <MetricNote>
+            The measure is per-merge-request dominance, not total commit share: for each merge
+            request, which address authored the most commits in it, and in how many of the
+            account&rsquo;s merge requests the same address won. That distinction matters — one
+            account here has merge requests 63% authored by an unrelated person, from a rebase or a
+            taken-over branch, which total commit share cannot tell apart from a real link. Links
+            are written unattended only above 80% dominance across at least three merge requests
+            <em> and</em> when the two names agree; name agreement never creates a link on its own.
+          </MetricNote>
         </section>
       ) : null}
 

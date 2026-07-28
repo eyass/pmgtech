@@ -497,6 +497,92 @@ export async function markIdentityAsBot(formData: FormData): Promise<ActionResul
   }
 }
 
+/**
+ * Accept a commit-bridge suggestion.
+ *
+ * Keyed on provider + external id rather than an unmatched_identities row, because a
+ * candidate can exist without one: the account may have been dismissed from triage
+ * earlier, or first seen through a merge request rather than a review event.
+ */
+export async function linkBridgeCandidate(formData: FormData): Promise<ActionResult> {
+  try {
+    await requireAdmin()
+    const provider = String(formData.get('provider') ?? 'gitlab')
+    const externalId = String(formData.get('externalId') ?? '')
+    const engineerId = String(formData.get('engineerId') ?? '')
+    const handle = String(formData.get('handle') ?? '') || null
+    if (!externalId || !engineerId) throw new Error('Pick an engineer to link to')
+
+    const db = supabaseAdmin()
+    const { error: insertError } = await db.from('engineer_identities').upsert(
+      { engineer_id: engineerId, provider, external_id: externalId, external_handle: handle },
+      { onConflict: 'provider,external_id' },
+    )
+    if (insertError) throw new Error(insertError.message)
+
+    const { data: stats, error: rpcError } = await db.rpc('reattribute_from_identities')
+    if (rpcError) throw new Error(rpcError.message)
+
+    await db
+      .from('unmatched_identities')
+      .delete()
+      .eq('provider', provider)
+      .eq('external_id', externalId)
+
+    revalidatePath('/admin')
+    revalidatePath('/people')
+    revalidatePath('/')
+
+    const counts = (stats ?? {}) as Record<string, number>
+    const total = Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0)
+    return { ok: true, message: `Linked and re-attributed ${total} historical rows` }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/**
+ * Exclude an account the bridge identified as machinery — its commits are authored by a
+ * generated address like `service_account_…@noreply.gitlab.com` that no person owns.
+ *
+ * Worth doing rather than dismissing: the largest such account here opened 325 merge
+ * requests, and while it sits in the unattributed pile it makes org-wide attribution
+ * coverage look far worse than it is.
+ */
+export async function markBridgeCandidateAsBot(formData: FormData): Promise<ActionResult> {
+  try {
+    await requireAdmin()
+    const provider = String(formData.get('provider') ?? 'gitlab')
+    const externalId = String(formData.get('externalId') ?? '')
+    const label = String(formData.get('label') ?? '') || null
+    if (!externalId) throw new Error('Missing identity')
+
+    const db = supabaseAdmin()
+    const { error: insertError } = await db
+      .from('excluded_accounts')
+      .upsert({ provider, external_id: externalId, label, reason: 'bot' }, {
+        onConflict: 'provider,external_id',
+      })
+    if (insertError) throw new Error(insertError.message)
+
+    await db
+      .from('unmatched_identities')
+      .update({ dismissed: true })
+      .eq('provider', provider)
+      .eq('external_id', externalId)
+
+    const { error: rpcError } = await db.rpc('recompute_mr_review_stats', { p_mr_ids: null })
+    if (rpcError) throw new Error(rpcError.message)
+
+    revalidatePath('/admin')
+    revalidatePath('/')
+    revalidatePath('/delivery')
+    return { ok: true, message: `${label ?? externalId} excluded as a bot` }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
 /** Hide an identity that will never map to a person — a bot, a service account. */
 export async function dismissIdentity(formData: FormData): Promise<ActionResult> {
   try {

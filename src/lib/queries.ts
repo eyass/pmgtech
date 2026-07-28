@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase/admin'
+import { loadBridgeCandidates, type BridgeRow } from '@/lib/sync/bridge'
 import type {
   AssessmentRow,
   AssessmentSummaryRow,
@@ -188,6 +189,20 @@ export async function getUnmatchedIdentities(): Promise<UnmatchedIdentityRow[]> 
     .limit(100)
   if (error) throw new Error(`Failed to load unmatched identities: ${error.message}`)
   return (data ?? []) as UnmatchedIdentityRow[]
+}
+
+/**
+ * Commit-bridge suggestions the sync did not act on by itself, strongest first.
+ *
+ * Read-only: the classification is recomputed from current data every time rather than
+ * stored, so accepting one suggestion or marking an account a bot makes the rest
+ * recalculate instead of going stale.
+ */
+export async function getBridgeSuggestions(): Promise<BridgeRow[]> {
+  const rows = await loadBridgeCandidates(supabaseAdmin())
+  return rows
+    .filter((row) => row.verdict.action !== 'link' && row.verdict.action !== 'skip')
+    .sort((a, b) => b.mrs - a.mrs)
 }
 
 export interface GitLabProjectRow {

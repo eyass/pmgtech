@@ -109,3 +109,168 @@ export function isPersonalBoard(name: string, patterns: string[]): boolean {
   const n = name.toLowerCase()
   return patterns.some((p) => p.length > 0 && n.includes(p.toLowerCase()))
 }
+
+// --- commit bridge -----------------------------------------------------------------
+//
+// GitLab reports a merge request's author as a numeric user id and, for most accounts
+// here, no email — so email-based resolution has nothing to work with and 46% of merged
+// merge requests end up attributed to nobody. The commits inside those merge requests do
+// carry author emails, and those emails do match engineers. Bridging the two recovers the
+// attribution without guessing at names.
+//
+// The bridge is not simply "take the commit email", because an author can open a merge
+// request full of somebody else's commits — a rebase, a cherry-pick, taking over an
+// abandoned branch. In this instance the GitLab account `daria37` (display name "Daria
+// Melnyk") has five merge requests whose commits are 63% authored by a completely
+// different person's address. Aggregate commit share cannot tell that apart from a real
+// link. Per-merge-request dominance can: it sits at 60% where every genuine case is
+// above 88%.
+
+/** An address belonging to machinery — a CI runner, a service account, a build bot. */
+export function isMachineEmail(email: string): boolean {
+  const e = email.toLowerCase().trim()
+  return (
+    e.endsWith('noreply.gitlab.com') ||
+    e.endsWith('noreply.github.com') ||
+    e.includes('service_account') ||
+    /_bot_|(^|[-._])bot@|^ci@|^gitlab-ci/.test(e)
+  )
+}
+
+/**
+ * An address that cannot reach anyone — "norberthires@norberts-macbook-air.local", the
+ * default git makes up when nobody sets user.email.
+ *
+ * Kept separate from isMachineEmail because the two need opposite handling: a service
+ * account should be excluded from the metrics, while this is a real person whose commits
+ * simply carry no usable address. Calling them a bot would delete their work from the
+ * numbers, which is the failure mode this whole exercise exists to avoid.
+ */
+export function isUnroutableEmail(email: string): boolean {
+  const e = email.toLowerCase().trim()
+  return (
+    !e.includes('@') ||
+    e.endsWith('.local') ||
+    e.endsWith('.localdomain') ||
+    e.endsWith('.localhost') ||
+    e.endsWith('@localhost')
+  )
+}
+
+/** Strip diacritics and punctuation so "Kadłuczka" and "Kadluczka" compare equal. */
+function nameTokens(name: string): string[] {
+  return name
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    // Polish ł has no combining form, so it survives NFD and needs its own mapping.
+    .replace(/ł/gi, 'l')
+    .replace(/ø/gi, 'o')
+    .replace(/đ/gi, 'd')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3)
+}
+
+/**
+ * Whether two names share a substantial token.
+ *
+ * This never creates a link on its own — identity resolution stays email-only, because
+ * two people called "J. Smith" merging silently is worse than a row left unmapped. It is
+ * used only to corroborate a link the commit evidence already proposes, which is what
+ * makes auto-applying safe: "Manolis Kypriotakis" and "Emmanouil Kypriotakis" agree on a
+ * surname, while "Daria Melnyk" and "Eyass Shakrah" agree on nothing.
+ */
+export function sharesNameToken(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false
+  const left = new Set(nameTokens(a))
+  if (left.size === 0) return false
+  return nameTokens(b).some((token) => left.has(token))
+}
+
+export interface BridgeCandidate {
+  provider: string
+  externalId: string
+  displayName: string | null
+  handle: string | null
+  /** Dominant commit-author email across this account's merge requests. */
+  email: string
+  /** Merge requests in which that email authored the most commits. */
+  mrsWon: number
+  /** Merge requests by this account that contain any commit at all. */
+  mrs: number
+  /** The engineer that email already belongs to, if any. */
+  engineerId: string | null
+  engineerName: string | null
+}
+
+export type BridgeVerdict =
+  | { action: 'link'; engineerId: string; confidence: number; reason: string }
+  | { action: 'suggest-link'; engineerId: string; confidence: number; reason: string }
+  | { action: 'suggest-bot'; reason: string }
+  | { action: 'suggest-engineer'; reason: string }
+  /** A real person whose commits carry no usable address — needs a human to say who. */
+  | { action: 'suggest-manual'; reason: string }
+  | { action: 'skip'; reason: string }
+
+export const BRIDGE_MIN_MRS = 3
+export const BRIDGE_AUTO_SHARE = 80
+
+/**
+ * What to do about one bridge candidate.
+ *
+ * Auto-applies only when all three hold: the dominant email belongs to a known engineer,
+ * it dominates at least 80% of at least three merge requests, and the two names
+ * corroborate. Anything weaker is surfaced for a human, who can see the same evidence.
+ */
+export function classifyBridgeCandidate(candidate: BridgeCandidate): BridgeVerdict {
+  const share = candidate.mrs > 0 ? (100 * candidate.mrsWon) / candidate.mrs : 0
+  const rounded = Math.round(share * 10) / 10
+
+  if (isMachineEmail(candidate.email)) {
+    return {
+      action: 'suggest-bot',
+      reason: `commits are authored by ${candidate.email}, which no person owns`,
+    }
+  }
+
+  if (candidate.mrs < BRIDGE_MIN_MRS) {
+    return {
+      action: 'skip',
+      reason: `only ${candidate.mrs} merge ${candidate.mrs === 1 ? 'request' : 'requests'} with commits`,
+    }
+  }
+
+  if (isUnroutableEmail(candidate.email)) {
+    return {
+      action: 'suggest-manual',
+      reason: `commits come from ${candidate.email}, a local git config that cannot be matched to anyone — pick the person, or have them set user.email`,
+    }
+  }
+
+  if (!candidate.engineerId) {
+    return {
+      action: 'suggest-engineer',
+      reason: `${candidate.email} authors ${rounded}% of their merge requests but matches no engineer`,
+    }
+  }
+
+  const namesAgree = sharesNameToken(candidate.displayName, candidate.engineerName)
+
+  if (rounded >= BRIDGE_AUTO_SHARE && namesAgree) {
+    return {
+      action: 'link',
+      engineerId: candidate.engineerId,
+      confidence: rounded,
+      reason: `${candidate.email} authors the most commits in ${candidate.mrsWon} of ${candidate.mrs} merge requests, and the names agree`,
+    }
+  }
+
+  return {
+    action: 'suggest-link',
+    engineerId: candidate.engineerId,
+    confidence: rounded,
+    reason: namesAgree
+      ? `${candidate.email} leads only ${rounded}% of their merge requests — below the ${BRIDGE_AUTO_SHARE}% bar for linking without review`
+      : `${candidate.email} belongs to ${candidate.engineerName}, whose name does not match ${candidate.displayName ?? 'this account'}`,
+  }
+}

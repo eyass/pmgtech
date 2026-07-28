@@ -8,6 +8,7 @@ import {
   type GitLabProject,
   type GitLabUser,
 } from '@/lib/integrations/gitlab'
+import { runCommitBridge } from '@/lib/sync/bridge'
 import { IdentityResolver } from '@/lib/sync/identity'
 import { isProductionEnvironment } from '@/lib/sync/matching'
 import {
@@ -64,6 +65,11 @@ export async function syncGitLab(
      * with time to spare and still have years of history left to walk.
      */
     backfill_complete: 0,
+    /** Commit-bridge outcome: links written, rows re-attributed, cases left for review. */
+    bridge_linked: 0,
+    bridge_reattributed: 0,
+    bridge_suggestions: 0,
+    bridge_error: '' as string,
   }
 
   try {
@@ -124,6 +130,29 @@ export async function syncGitLab(
     // Now that MRs exist, connect them to any Jira issues already synced.
     const { data: linked } = await ctx.db.rpc('link_mrs_to_issues')
     ctx.log(`Linked ${linked ?? 0} merge-request/issue pairs`)
+
+    // Most GitLab accounts here expose no email, so email-only resolution leaves nearly
+    // half of merged MRs attributed to nobody. The commits inside them do carry emails;
+    // the bridge links the account when that evidence is unambiguous and leaves the rest
+    // for the admin screen. Runs last so it sees the commits this slice just wrote.
+    try {
+      const bridge = await runCommitBridge(ctx.db)
+      stats.bridge_linked = bridge.linked
+      stats.bridge_reattributed = bridge.reattributed
+      stats.bridge_suggestions = bridge.candidates.filter(
+        (c) => c.verdict.action !== 'link' && c.verdict.action !== 'skip',
+      ).length
+      for (const row of bridge.candidates) {
+        if (row.verdict.action === 'link') {
+          ctx.log(`Bridged ${row.handle ?? row.externalId}: ${row.verdict.reason}`)
+        }
+      }
+    } catch (error) {
+      // A bridge failure must not lose a slice's worth of fetched data — the links are
+      // derived and can be rebuilt on the next run.
+      stats.bridge_error = (error as Error).message.slice(0, 200)
+      ctx.log(`Commit bridge failed: ${(error as Error).message}`)
+    }
 
     const status =
       stats.project_errors > 0 || stats.ran_out_of_time === 1 ? 'partial' : 'success'

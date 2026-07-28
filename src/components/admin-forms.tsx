@@ -165,6 +165,52 @@ export function LinkIdentityForm({
 }
 
 /**
+ * Pick an engineer for a commit-bridge candidate.
+ *
+ * Keyed on provider + external id rather than an unmatched_identities row, because a
+ * bridge candidate can exist without one — the account may have been dismissed from
+ * triage earlier, or only ever seen as a merge-request author.
+ */
+export function LinkBridgeForm({
+  action,
+  provider,
+  externalId,
+  handle,
+  engineers,
+}: {
+  action: Action
+  provider: string
+  externalId: string
+  handle: string
+  engineers: { id: string; name: string }[]
+}) {
+  const [result, formAction] = useAction(action)
+
+  return (
+    <form action={formAction} className="flex flex-wrap items-center gap-2">
+      <input type="hidden" name="provider" value={provider} />
+      <input type="hidden" name="externalId" value={externalId} />
+      <input type="hidden" name="handle" value={handle} />
+      <select
+        name="engineerId"
+        defaultValue=""
+        aria-label="Link to engineer"
+        className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+      >
+        <option value="">Choose engineer…</option>
+        {engineers.map((engineer) => (
+          <option key={engineer.id} value={engineer.id}>
+            {engineer.name}
+          </option>
+        ))}
+      </select>
+      <SubmitButton label="Link" />
+      <Status result={result} />
+    </form>
+  )
+}
+
+/**
  * Add someone who is not in HiBob — a leaver whose commits are still in the
  * window, or a contractor. Email is optional but does the most work: commit author
  * emails match on it, so supplying one attributes their history immediately
