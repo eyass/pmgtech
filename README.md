@@ -80,6 +80,41 @@ Import the repo in Vercel, add the environment variables, deploy. `vercel.json`
 registers a cron that hits `/api/sync` every three hours; Vercel sends
 `CRON_SECRET` as a bearer token automatically once that variable exists.
 
+Two things catch people out on the first deploy:
+
+- **`main` started as an empty root commit**, created only to give the first pull
+  request a base. Vercel builds the production branch, so until the feature branch
+  is merged you get a project with nothing in it — often no deployment at all
+  rather than a failed one. Either merge to `main` first, or point
+  **Settings → Git → Production Branch** at the branch that has the code and
+  redeploy.
+- **A git-linked project only builds on a push.** Creating the project after the
+  last push leaves it empty until the next commit arrives, so push something (or
+  hit Redeploy) rather than waiting.
+
+Set the environment variables for Preview as well as Production if you want branch
+deployments to work — a preview build with no `NEXT_PUBLIC_SUPABASE_URL` compiles
+fine, because every route is dynamic, and then throws on each request instead.
+
+### 4a. If you deploy with `DISABLE_AUTH=true`
+
+`DISABLE_AUTH` is not a read-only preview switch. `currentUser()` returns a
+synthetic user with `isAdmin: true`, which satisfies the `requireAdmin()` check in
+front of every server action — so anyone who can load the page can also reassign
+squads, override seniority levels, exclude people from metrics, remap repositories
+and boards, and write performance assessments. Server actions are POST endpoints;
+the UI hiding a button is not a control.
+
+`/api/sync` is the exception: it authorises independently in
+`src/lib/sync/auth.ts` and ignores `DISABLE_AUTH`, so an anonymous caller gets a
+401 and cannot trigger a sync.
+
+If you deploy this way to see the app before Google sign-in is configured, turn on
+**Settings → Deployment Protection → Vercel Authentication** so the URL is gated
+by Vercel SSO. Never leave `DISABLE_AUTH=true` on a publicly reachable
+deployment, and turn it off before the first real HiBob or GitLab sync puts
+personnel data in the database.
+
 ### 5. Check GitLab before syncing
 
 ```bash
