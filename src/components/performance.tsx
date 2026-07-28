@@ -160,7 +160,9 @@ export function BandPill({ band }: { band: Band }) {
 export function ShapePill({ shape }: { shape: Shape }) {
   return (
     <span title={SHAPE_MEANING[shape]}>
-      <Pill tone={shape === 'Quiet in telemetry' ? 'neutral' : 'good'}>{shape}</Pill>
+      <Pill tone={shape === 'Quiet in telemetry' || shape === 'No cohort' ? 'neutral' : 'good'}>
+        {shape}
+      </Pill>
     </span>
   )
 }

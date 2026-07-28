@@ -6,7 +6,7 @@ export type DimensionKey = 'flow' | 'quality' | 'collaboration' | 'impact'
 export type Band = 'below' | 'typical' | 'above' | 'insufficient'
 
 /** Descriptive balance of shipping versus reviewing. Not a grade. */
-export type Shape = 'Anchor' | 'Shipper' | 'Multiplier' | 'Quiet in telemetry'
+export type Shape = 'Anchor' | 'Shipper' | 'Multiplier' | 'Quiet in telemetry' | 'No cohort'
 
 export interface PerformanceDimension {
   key: DimensionKey
@@ -162,4 +162,6 @@ export const SHAPE_MEANING: Record<Shape, string> = {
     'Reviews above the median while shipping below it. Often exactly right for a senior — their output is other people.',
   'Quiet in telemetry':
     'Below the median on both. This tool cannot see their work; it does not mean there was none. Design, incidents, pairing, on-call and mentoring are all invisible here.',
+  'No cohort':
+    'Fewer than three peers at this level, so there is no median to compare against — a shape here would only be measuring them against themselves.',
 }

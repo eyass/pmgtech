@@ -479,6 +479,10 @@ select
   -- zero, a plain >= comparison would credit someone who reviewed nothing as a
   -- Multiplier. You have to have actually done the thing.
   case
+    -- Shape is cohort-relative, so it needs the same guard the bands use: with
+    -- fewer than three peers the median is effectively the person themselves,
+    -- and any shape would just be measuring them against their own numbers.
+    when r.peers < 3 then 'No cohort'
     when r.merged_mrs    >= greatest(r.med_merged, 1)
      and r.reviews_given >= greatest(r.med_reviews, 1) then 'Anchor'
     when r.merged_mrs    >= greatest(r.med_merged, 1)
