@@ -16,6 +16,7 @@ import type {
   ReviewNetworkRow,
   SeniorityBenchmarkRow,
   SprintScorecard,
+  SquadKey,
   SquadRow,
   SquadScorecard,
   SyncRunRow,
@@ -203,6 +204,29 @@ export async function getBridgeSuggestions(): Promise<BridgeRow[]> {
   return rows
     .filter((row) => row.verdict.action !== 'link' && row.verdict.action !== 'skip')
     .sort((a, b) => b.mrs - a.mrs)
+}
+
+export interface SquadSuggestionRow {
+  engineer_id: string
+  full_name: string
+  job_title: string | null
+  squad_id: string
+  squad_key: SquadKey
+  squad_name: string
+  issues: number
+  total_issues: number
+  share_pct: number | null
+  mrs: number
+}
+
+/**
+ * Squads suggested for engineers who have none, from the Jira boards their issues sit on.
+ *
+ * Suggestions rather than assignments: squad membership is an organisational fact, and a
+ * wrong one silently misattributes everything the person does.
+ */
+export function getSquadSuggestions() {
+  return rpcRows<SquadSuggestionRow>('squad_suggestions', {})
 }
 
 export interface GitLabProjectRow {

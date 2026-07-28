@@ -95,3 +95,74 @@ $function$;
 
 revoke all on function commit_bridge_candidates() from public;
 grant execute on function commit_bridge_candidates() to authenticated, service_role;
+
+-- The same shape for Jira, where the evidence has to be different.
+--
+-- Atlassian will not hand out an address for an API token at all: the REST
+-- /user/email endpoint answers "Requestor must be a whitelisted app (not a user)", and
+-- emailAddress is omitted from every user object. So all 39 Jira accounts in this
+-- instance arrive with a display name and nothing else, and 0 of 570 issues attribute to
+-- a person — which also means no per-person board signal, and so no way to suggest a
+-- squad from Jira activity.
+--
+-- The evidence that is available: merge requests record the Jira keys in their branch and
+-- title, and merge-request authors are now resolved. So if the issues assigned to a Jira
+-- account are consistently referenced by merge requests one engineer opened, that account
+-- is that engineer. Names then corroborate, exactly as in the commit bridge — they never
+-- decide on their own.
+create or replace function jira_bridge_candidates()
+returns table (
+  provider text,
+  external_id text,
+  display_name text,
+  handle text,
+  mrs_won int,
+  mrs int,
+  engineer_id uuid,
+  engineer_name text
+)
+language sql
+stable
+set search_path to 'public', 'extensions'
+as $function$
+with pairs as (
+  select
+    i.assignee_jira_id       as account,
+    m.author_engineer_id     as eng,
+    count(distinct i.key)::int as issues
+  from merge_requests m
+  join jira_issues i on i.key = any(m.jira_keys)
+  where m.author_engineer_id is not null
+    and i.assignee_jira_id is not null
+    and not exists (
+      select 1 from engineer_identities ei
+      where ei.provider = 'jira' and ei.external_id = i.assignee_jira_id
+    )
+  group by i.assignee_jira_id, m.author_engineer_id
+),
+totals as (
+  select account, sum(issues)::int as issues from pairs group by account
+),
+ranked as (
+  select pairs.*, totals.issues as total,
+         row_number() over (partition by pairs.account order by pairs.issues desc) as rn
+  from pairs join totals on totals.account = pairs.account
+)
+select
+  'jira'::text,
+  r.account,
+  u.display_name,
+  u.external_handle,
+  r.issues,
+  r.total,
+  e.id,
+  e.full_name
+from ranked r
+join engineers e on e.id = r.eng
+left join unmatched_identities u on u.provider = 'jira' and u.external_id = r.account
+where r.rn = 1
+order by r.total desc;
+$function$;
+
+revoke all on function jira_bridge_candidates() from public;
+grant execute on function jira_bridge_candidates() to authenticated, service_role;

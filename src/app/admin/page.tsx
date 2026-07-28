@@ -12,14 +12,15 @@ import {
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { currentUser } from '@/lib/auth'
 import { integrationStatus } from '@/lib/env'
-import { nf, relativeDate } from '@/lib/format'
+import { nf, pct, relativeDate } from '@/lib/format'
 import {
   getEngineers,
   getGitLabProjects,
   getJiraBoards,
   getSquads,
-  getSyncRuns,
   getBridgeSuggestions,
+  getSquadSuggestions,
+  getSyncRuns,
   getUnmatchedIdentities,
 } from '@/lib/queries'
 import { supabaseAdmin } from '@/lib/supabase/admin'
@@ -46,7 +47,7 @@ export default async function AdminPage() {
   const user = await currentUser()
   const readOnly = !user?.isAdmin
 
-  const [squads, engineers, projects, boards, runs, unmatched, levels, bridge] =
+  const [squads, engineers, projects, boards, runs, unmatched, levels, bridge, squadHints] =
     await Promise.all([
       getSquads(),
       getEngineers(),
@@ -56,6 +57,7 @@ export default async function AdminPage() {
       getUnmatchedIdentities(),
       getSeniorityLevels(),
       getBridgeSuggestions(),
+      getSquadSuggestions(),
     ])
 
   const status = integrationStatus()
@@ -121,6 +123,72 @@ export default async function AdminPage() {
               waiting for the cron) walks steadily through the history without duplicating work.
             </MetricNote>
           </Card>
+        </section>
+      ) : null}
+
+      {/* --- squad suggestions ------------------------------------------------ */}
+
+      {squadHints.length > 0 ? (
+        <section>
+          <SectionHeading
+            title="Suggested squads"
+            hint="Engineers with no squad, and the squad whose Jira board their issues actually sit on. Until a squad is set, their work reaches a person but no team, which is why a squad total can be lower than the sum of its people."
+          />
+          <Table
+            empty="Everyone has a squad."
+            head={
+              <>
+                <Th>Engineer</Th>
+                <Th>Suggested squad</Th>
+                <Th align="right" title="Issues on that squad's boards, out of all their board work">
+                  Board work
+                </Th>
+                <Th align="right" title="Merged merge requests that would move with them">
+                  Merged MRs
+                </Th>
+                <Th>Assign</Th>
+              </>
+            }
+          >
+            {squadHints.map((hint) => (
+              <tr key={hint.engineer_id}>
+                <Td>
+                  <Link href={`/people/${hint.engineer_id}`} className="hover:underline">
+                    {hint.full_name}
+                  </Link>
+                  <div className="text-xs text-[var(--color-muted)]">{hint.job_title ?? '—'}</div>
+                </Td>
+                <Td>
+                  <SquadBadge squadKey={hint.squad_key} name={hint.squad_name} />
+                </Td>
+                <Td align="right" numeric>
+                  {nf(hint.issues)}/{nf(hint.total_issues)}
+                  <div className="text-xs text-[var(--color-muted)]">{pct(hint.share_pct)}</div>
+                </Td>
+                <Td align="right" numeric>{nf(hint.mrs)}</Td>
+                <Td>
+                  {readOnly ? (
+                    <span className="text-xs text-[var(--color-muted)]">admin only</span>
+                  ) : (
+                    <ToggleButton
+                      action={setEngineerSquad}
+                      fields={{ engineerId: hint.engineer_id, squadId: hint.squad_id }}
+                      label={`Assign to ${hint.squad_name}`}
+                      title="Sets the squad manually, so a later HiBob sync will not overwrite it"
+                    />
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </Table>
+          <MetricNote>
+            HiBob cannot answer this — every engineer&rsquo;s department here is the single value
+            &ldquo;Tech&rdquo; — and neither can the repository, which the dashboard otherwise
+            falls back to: this org has one tracked project, a monorepo that three squads work in
+            at roughly 41/37/22%, so attributing it to any one team would be wrong for most of its
+            work. The Jira board is the only signal that separates them, and it only became
+            available once Jira accounts were linked to people.
+          </MetricNote>
         </section>
       ) : null}
 

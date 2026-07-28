@@ -262,6 +262,7 @@ describe('classifyBridgeCandidate', () => {
     displayName: 'Norbert Sajdok',
     handle: 'nsajdok',
     email: 'norbert@petmediagroup.com',
+    kind: 'commit-email',
     mrsWon: 181,
     mrs: 205,
     engineerId: 'eng-norbert',
@@ -357,6 +358,48 @@ describe('classifyBridgeCandidate', () => {
   it('skips an account with too little history to judge', () => {
     const verdict = classifyBridgeCandidate({ ...base, mrsWon: 2, mrs: 2 })
     assert.equal(verdict.action, 'skip')
+  })
+
+  it('links Jira accounts on issue-author evidence, with no address involved', () => {
+    // Atlassian gives out no addresses for an API token, so the evidence is: who opened
+    // the merge requests that reference the issues this account is assigned. These are
+    // the real pairs, including the ones a strict name comparison would miss.
+    const jira: BridgeCandidate = {
+      provider: 'jira',
+      externalId: '712020:f318da82',
+      displayName: 'Norbert Sajdok',
+      handle: null,
+      email: '',
+      kind: 'issue-author',
+      mrsWon: 29,
+      mrs: 29,
+      engineerId: 'eng-norbert',
+      engineerName: 'Norbert Sajdok',
+    }
+    for (const patch of [
+      {},
+      { displayName: 'dina.fejzovic', engineerName: 'Dina Fejzović Durmiš', mrsWon: 15, mrs: 15 },
+      { displayName: 'cengiz', engineerName: 'Cengiz Krämer', mrsWon: 4, mrs: 4 },
+      { displayName: 'Petra Marce', engineerName: 'Petra Marče', mrsWon: 7, mrs: 8 },
+      { displayName: 'Aleksandra Ola Tokarz', engineerName: 'Aleksandra Tokarz', mrsWon: 13, mrs: 13 },
+    ]) {
+      const verdict = classifyBridgeCandidate({ ...jira, ...patch })
+      assert.equal(verdict.action, 'link', JSON.stringify(patch))
+    }
+  })
+
+  it('does not apply the address checks to a Jira candidate', () => {
+    // A Jira candidate carries no address at all. If the machine-email test ran on the
+    // empty string it would have to be careful not to call every Jira account a bot.
+    const verdict = classifyBridgeCandidate({
+      ...base,
+      provider: 'jira',
+      email: '',
+      kind: 'issue-author',
+      mrsWon: 10,
+      mrs: 10,
+    })
+    assert.equal(verdict.action, 'link')
   })
 
   it('does not divide by zero when an account has no commits at all', () => {

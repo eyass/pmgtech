@@ -30,25 +30,37 @@ export interface BridgeResult {
   reattributed: number
 }
 
-export async function loadBridgeCandidates(db: SupabaseClient): Promise<BridgeRow[]> {
-  const { data, error } = await db.rpc('commit_bridge_candidates')
-  if (error) throw new Error(`commit_bridge_candidates failed: ${error.message}`)
+const SOURCES = [
+  { rpc: 'commit_bridge_candidates', kind: 'commit-email' as const },
+  { rpc: 'jira_bridge_candidates', kind: 'issue-author' as const },
+]
 
-  return ((data ?? []) as Record<string, unknown>[]).map((row) => {
-    const candidate: BridgeCandidate & { commits: number } = {
-      provider: String(row.provider ?? 'gitlab'),
-      externalId: String(row.external_id ?? ''),
-      displayName: (row.display_name as string | null) ?? null,
-      handle: (row.handle as string | null) ?? null,
-      email: String(row.email ?? ''),
-      mrsWon: Number(row.mrs_won ?? 0),
-      mrs: Number(row.mrs ?? 0),
-      commits: Number(row.commits ?? 0),
-      engineerId: (row.engineer_id as string | null) ?? null,
-      engineerName: (row.engineer_name as string | null) ?? null,
+export async function loadBridgeCandidates(db: SupabaseClient): Promise<BridgeRow[]> {
+  const out: BridgeRow[] = []
+
+  for (const source of SOURCES) {
+    const { data, error } = await db.rpc(source.rpc)
+    if (error) throw new Error(`${source.rpc} failed: ${error.message}`)
+
+    for (const row of (data ?? []) as Record<string, unknown>[]) {
+      const candidate: BridgeCandidate & { commits: number } = {
+        provider: String(row.provider ?? 'gitlab'),
+        externalId: String(row.external_id ?? ''),
+        displayName: (row.display_name as string | null) ?? null,
+        handle: (row.handle as string | null) ?? null,
+        email: String(row.email ?? ''),
+        kind: source.kind,
+        mrsWon: Number(row.mrs_won ?? 0),
+        mrs: Number(row.mrs ?? 0),
+        commits: Number(row.commits ?? 0),
+        engineerId: (row.engineer_id as string | null) ?? null,
+        engineerName: (row.engineer_name as string | null) ?? null,
+      }
+      out.push({ ...candidate, verdict: classifyBridgeCandidate(candidate) })
     }
-    return { ...candidate, verdict: classifyBridgeCandidate(candidate) }
-  })
+  }
+
+  return out
 }
 
 /**
@@ -91,14 +103,16 @@ export async function runCommitBridge(
 
   // The triage list is keyed on these accounts still being unknown, so clear the ones we
   // have just answered rather than leaving them to be linked a second time by hand.
-  await db
-    .from('unmatched_identities')
-    .delete()
-    .eq('provider', 'gitlab')
-    .in(
-      'external_id',
-      confident.map((c) => c.externalId),
-    )
+  for (const provider of new Set(confident.map((c) => c.provider))) {
+    await db
+      .from('unmatched_identities')
+      .delete()
+      .eq('provider', provider)
+      .in(
+        'external_id',
+        confident.filter((c) => c.provider === provider).map((c) => c.externalId),
+      )
+  }
 
   return { candidates, linked: confident.length, reattributed }
 }

@@ -192,13 +192,26 @@ export interface BridgeCandidate {
   externalId: string
   displayName: string | null
   handle: string | null
-  /** Dominant commit-author email across this account's merge requests. */
+  /**
+   * Dominant commit-author email across this account's merge requests. Empty for the Jira
+   * bridge, whose evidence is not an address — see `kind`.
+   */
   email: string
-  /** Merge requests in which that email authored the most commits. */
+  /**
+   * Which evidence produced this candidate:
+   *  - 'commit-email': the emails on the commits inside the account's merge requests;
+   *  - 'issue-author': who authored the merge requests that reference the issues this
+   *    Jira account is assigned. Jira will not give us addresses at all — the REST
+   *    `/user/email` endpoint answers "Requestor must be a whitelisted app (not a user)"
+   *    for an API token — so this is the only evidence available for Jira, and it is
+   *    evidence rather than a name guess.
+   */
+  kind: 'commit-email' | 'issue-author'
+  /** Units in which the dominant party won (merge requests, or issues). */
   mrsWon: number
-  /** Merge requests by this account that contain any commit at all. */
+  /** Units considered in total. */
   mrs: number
-  /** The engineer that email already belongs to, if any. */
+  /** The engineer the evidence points at, if any. */
   engineerId: string | null
   engineerName: string | null
 }
@@ -225,22 +238,25 @@ export const BRIDGE_AUTO_SHARE = 80
 export function classifyBridgeCandidate(candidate: BridgeCandidate): BridgeVerdict {
   const share = candidate.mrs > 0 ? (100 * candidate.mrsWon) / candidate.mrs : 0
   const rounded = Math.round(share * 10) / 10
+  const unit = candidate.kind === 'issue-author' ? 'issue' : 'merge request'
+  const units = `${unit}${candidate.mrs === 1 ? '' : 's'}`
 
-  if (isMachineEmail(candidate.email)) {
-    return {
-      action: 'suggest-bot',
-      reason: `commits are authored by ${candidate.email}, which no person owns`,
+  // The address checks only apply to the commit bridge; the Jira bridge has no address to
+  // check, because Atlassian will not give one out for an API token.
+  if (candidate.kind === 'commit-email') {
+    if (isMachineEmail(candidate.email)) {
+      return {
+        action: 'suggest-bot',
+        reason: `commits are authored by ${candidate.email}, which no person owns`,
+      }
     }
   }
 
   if (candidate.mrs < BRIDGE_MIN_MRS) {
-    return {
-      action: 'skip',
-      reason: `only ${candidate.mrs} merge ${candidate.mrs === 1 ? 'request' : 'requests'} with commits`,
-    }
+    return { action: 'skip', reason: `only ${candidate.mrs} ${units} of evidence` }
   }
 
-  if (isUnroutableEmail(candidate.email)) {
+  if (candidate.kind === 'commit-email' && isUnroutableEmail(candidate.email)) {
     return {
       action: 'suggest-manual',
       reason: `commits come from ${candidate.email}, a local git config that cannot be matched to anyone — pick the person, or have them set user.email`,
@@ -250,18 +266,22 @@ export function classifyBridgeCandidate(candidate: BridgeCandidate): BridgeVerdi
   if (!candidate.engineerId) {
     return {
       action: 'suggest-engineer',
-      reason: `${candidate.email} authors ${rounded}% of their merge requests but matches no engineer`,
+      reason: `${candidate.email} authors ${rounded}% of their ${units} but matches no engineer`,
     }
   }
 
   const namesAgree = sharesNameToken(candidate.displayName, candidate.engineerName)
+  const evidence =
+    candidate.kind === 'issue-author'
+      ? `${candidate.engineerName} opened the merge requests for ${candidate.mrsWon} of the ${candidate.mrs} issues assigned to this account`
+      : `${candidate.email} authors the most commits in ${candidate.mrsWon} of ${candidate.mrs} merge requests`
 
   if (rounded >= BRIDGE_AUTO_SHARE && namesAgree) {
     return {
       action: 'link',
       engineerId: candidate.engineerId,
       confidence: rounded,
-      reason: `${candidate.email} authors the most commits in ${candidate.mrsWon} of ${candidate.mrs} merge requests, and the names agree`,
+      reason: `${evidence}, and the names agree`,
     }
   }
 
@@ -270,7 +290,7 @@ export function classifyBridgeCandidate(candidate: BridgeCandidate): BridgeVerdi
     engineerId: candidate.engineerId,
     confidence: rounded,
     reason: namesAgree
-      ? `${candidate.email} leads only ${rounded}% of their merge requests — below the ${BRIDGE_AUTO_SHARE}% bar for linking without review`
-      : `${candidate.email} belongs to ${candidate.engineerName}, whose name does not match ${candidate.displayName ?? 'this account'}`,
+      ? `${evidence} — ${rounded}%, below the ${BRIDGE_AUTO_SHARE}% bar for linking without review`
+      : `${evidence}, but that name does not match ${candidate.displayName ?? 'this account'}`,
   }
 }
