@@ -77,20 +77,25 @@ tells you exactly which variables are missing.
 ### 4. Deploy
 
 Import the repo in Vercel, add the environment variables, deploy. `vercel.json`
-registers a cron that hits `/api/sync` every three hours; Vercel sends
+registers a cron that hits `/api/sync` once a day at 03:00 UTC; Vercel sends
 `CRON_SECRET` as a bearer token automatically once that variable exists.
 
-Two things catch people out on the first deploy:
+Three things catch people out on the first deploy:
 
+- **Cron frequency is plan-gated.** Hobby accounts allow one cron run per day, and
+  Vercel rejects the whole deployment at config validation if `vercel.json` asks
+  for more — no deployment record is created at all, so the project looks untouched
+  rather than failed. The committed schedule is daily so it deploys on any plan. On
+  Pro, `0 */3 * * *` is the schedule you actually want.
+- **Daily crons are too slow for the initial backfill.** Each run stops on a
+  ~300-second budget and resumes from its cursors, so a 12-month first pass would
+  take many days at one run per day. Drive the backfill from the admin page instead
+  and let the cron keep it current afterwards.
 - **`main` started as an empty root commit**, created only to give the first pull
   request a base. Vercel builds the production branch, so until the feature branch
-  is merged you get a project with nothing in it — often no deployment at all
-  rather than a failed one. Either merge to `main` first, or point
-  **Settings → Git → Production Branch** at the branch that has the code and
-  redeploy.
-- **A git-linked project only builds on a push.** Creating the project after the
-  last push leaves it empty until the next commit arrives, so push something (or
-  hit Redeploy) rather than waiting.
+  is merged, production has nothing in it. Either merge to `main` first, or point
+  **Settings → Git → Production Branch** at the branch that has the code. Branch
+  pushes still get preview deployments either way.
 
 Set the environment variables for Preview as well as Production if you want branch
 deployments to work — a preview build with no `NEXT_PUBLIC_SUPABASE_URL` compiles
