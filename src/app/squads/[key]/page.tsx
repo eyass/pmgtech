@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { SprintBarChart, TrendChart } from '@/components/charts'
+import { AttributionBanner } from '@/components/coverage'
 import {
   Card,
   Kpi,
@@ -18,6 +19,7 @@ import {
   getAttentionList,
   getDeliveryTrend,
   getEngineerScorecards,
+  getOrgKpis,
   getSeniorityBenchmark,
   getSprintScorecards,
   getSquadByKey,
@@ -42,13 +44,14 @@ export default async function SquadDetailPage({
   const squad = await getSquadByKey(squadKey)
   if (!squad) notFound()
 
-  const [allSquads, trend, engineers, sprints, attention, benchmark] = await Promise.all([
+  const [allSquads, trend, engineers, sprints, attention, benchmark, orgKpis] = await Promise.all([
     getSquadScorecards(range),
     getDeliveryTrend(range, bucket, squad.id),
     getEngineerScorecards(range, squad.id),
     getSprintScorecards(squad.id, 6),
     getAttentionList(squad.id, 15),
     getSeniorityBenchmark(range, squad.id),
+    getOrgKpis(range),
   ])
 
   const scorecard = allSquads.find((s) => s.squad_id === squad.id)
@@ -85,6 +88,8 @@ export default async function SquadDetailPage({
             direction="lower-better"
             raw={scorecard.median_cycle_hours}
             thresholds={{ good: 24, bad: 120 }}
+            sample={scorecard.cycle_sample}
+            sampleUnit="merged MRs"
           />
           <Kpi
             label="Review wait"
@@ -93,17 +98,28 @@ export default async function SquadDetailPage({
             direction="lower-better"
             raw={scorecard.median_review_wait_hours}
             thresholds={{ good: 4, bad: 24 }}
+            sample={scorecard.review_wait_sample}
+            sampleUnit="merged MRs"
           />
           <Kpi
             label="Deploys"
             value={`${nf(scorecard.deploys_per_week, 1)}/wk`}
-            hint={`${pct(scorecard.change_failure_pct, 1)} change failure · ${hours(scorecard.mttr_hours)} to restore`}
+            hint={`${nf(scorecard.prod_deploys)} production releases`}
             direction="higher-better"
             raw={scorecard.deploys_per_week}
             thresholds={{ good: 5, bad: 0.5 }}
+            sample={scorecard.deploy_sample}
+            sampleUnit="finished releases"
+            withheld={
+              scorecard.deploy_coverage_pct < 50
+                ? `history covers ${pct(scorecard.deploy_coverage_pct, 0)} of this period`
+                : undefined
+            }
           />
         </div>
       ) : null}
+
+      <AttributionBanner kpis={orgKpis} scope="squad" />
 
       <section className="grid gap-4 lg:grid-cols-2">
         <Card>

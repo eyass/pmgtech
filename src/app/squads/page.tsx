@@ -1,10 +1,22 @@
 import Link from 'next/link'
 
 import { TrendChart } from '@/components/charts'
-import { Card, Kpi, MetricNote, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
+import { AttributionBanner } from '@/components/coverage'
+import {
+  Card,
+  GuardedValue,
+  Kpi,
+  MetricNote,
+  SectionHeading,
+  SquadBadge,
+  Table,
+  Td,
+  Th,
+} from '@/components/ui'
 import { compact, hours, nf, pct } from '@/lib/format'
 import {
   getDeliveryTrend,
+  getOrgKpis,
   getReviewNetwork,
   getSquadScorecards,
   getWorkTypeMix,
@@ -22,11 +34,12 @@ export default async function SquadsPage({
   const { period } = await searchParams
   const { key, range, bucket } = resolvePeriod(period)
 
-  const [squads, trend, mix, network] = await Promise.all([
+  const [squads, trend, mix, network, kpis] = await Promise.all([
     getSquadScorecards(range),
     getDeliveryTrend(range, bucket),
     getWorkTypeMix(range),
     getReviewNetwork(range),
+    getOrgKpis(range),
   ])
 
   const squadKeys = squads.map((s) => s.squad_key)
@@ -43,6 +56,8 @@ export default async function SquadsPage({
         <h1 className="text-xl font-semibold">Squad comparison</h1>
         <p className="text-sm text-[var(--color-muted)]">{PERIODS[key].label}</p>
       </div>
+
+      <AttributionBanner kpis={kpis} />
 
       {/* Per-squad cards give each team its own headline before the comparison
           table, so a squad lead can find their own numbers immediately. */}
@@ -67,12 +82,39 @@ export default async function SquadsPage({
 
             <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <MiniStat label="Merged" value={nf(squad.merged_mrs)} />
-              <MiniStat label="Lead time" value={hours(squad.median_cycle_hours)} />
-              <MiniStat label="Review wait" value={hours(squad.median_review_wait_hours)} />
-              <MiniStat label="Deploys/wk" value={nf(squad.deploys_per_week, 1)} />
+              <MiniStat
+                label="Lead time"
+                value={hours(squad.median_cycle_hours)}
+                sample={squad.cycle_sample}
+                unit="merged MRs"
+              />
+              <MiniStat
+                label="Review wait"
+                value={hours(squad.median_review_wait_hours)}
+                sample={squad.review_wait_sample}
+                unit="reviewed MRs"
+              />
+              <MiniStat
+                label="Deploys/wk"
+                value={nf(squad.deploys_per_week, 1)}
+                sample={squad.deploy_sample}
+                unit="finished releases"
+              />
               <MiniStat label="Issues" value={nf(squad.issues_resolved)} />
-              <MiniStat label="Points" value={nf(squad.story_points)} />
-              <MiniStat label="Bugs" value={pct(squad.bug_ratio_pct)} />
+              {/* Points are shown with their sample because most issues here carry no
+                  estimate, so the total is a floor rather than a total. */}
+              <MiniStat
+                label="Points"
+                value={nf(squad.story_points)}
+                sample={squad.story_points_sample}
+                unit="estimated issues"
+              />
+              <MiniStat
+                label="Bugs"
+                value={pct(squad.bug_ratio_pct)}
+                sample={squad.issues_resolved}
+                unit="resolved issues"
+              />
               <MiniStat label="Churn" value={compact(squad.code_churn)} />
             </div>
           </Card>
@@ -133,19 +175,90 @@ export default async function SquadsPage({
               <Td align="right" numeric>{nf(squad.headcount)}</Td>
               <Td align="right" numeric>{nf(squad.merged_mrs)}</Td>
               <Td align="right" numeric>{nf(squad.mrs_per_engineer_week, 2)}</Td>
-              <Td align="right" numeric>{hours(squad.median_cycle_hours)}</Td>
-              <Td align="right" numeric>{hours(squad.p75_cycle_hours)}</Td>
-              <Td align="right" numeric>{hours(squad.median_review_wait_hours)}</Td>
-              <Td align="right" numeric>{pct(squad.review_coverage_pct)}</Td>
-              <Td align="right" numeric>{compact(squad.median_mr_churn)}</Td>
-              <Td align="right" numeric>{pct(squad.large_mr_pct)}</Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={hours(squad.median_cycle_hours)}
+                  raw={squad.median_cycle_hours}
+                  sample={squad.cycle_sample}
+                  unit="merged MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={hours(squad.p75_cycle_hours)}
+                  raw={squad.p75_cycle_hours}
+                  sample={squad.cycle_sample}
+                  unit="merged MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={hours(squad.median_review_wait_hours)}
+                  raw={squad.median_review_wait_hours}
+                  sample={squad.review_wait_sample}
+                  unit="reviewed MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={pct(squad.review_coverage_pct)}
+                  raw={squad.review_coverage_pct}
+                  sample={squad.merged_mrs}
+                  unit="merged MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={compact(squad.median_mr_churn)}
+                  raw={squad.median_mr_churn}
+                  sample={squad.merged_mrs}
+                  unit="merged MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={pct(squad.large_mr_pct)}
+                  raw={squad.large_mr_pct}
+                  sample={squad.merged_mrs}
+                  unit="merged MRs"
+                />
+              </Td>
               <Td align="right" numeric>{nf(squad.reviews_given)}</Td>
-              <Td align="right" numeric>{nf(squad.deploys_per_week, 1)}</Td>
-              <Td align="right" numeric>{pct(squad.change_failure_pct, 1)}</Td>
-              <Td align="right" numeric>{hours(squad.mttr_hours)}</Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={nf(squad.deploys_per_week, 1)}
+                  raw={squad.deploys_per_week}
+                  sample={squad.deploy_sample}
+                  unit="finished releases"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={pct(squad.change_failure_pct, 1)}
+                  raw={squad.change_failure_pct}
+                  sample={squad.deploy_sample}
+                  unit="finished releases"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={hours(squad.mttr_hours)}
+                  raw={squad.mttr_hours}
+                  sample={squad.mttr_sample}
+                  floor={5}
+                  unit="recovered failures"
+                />
+              </Td>
             </tr>
           ))}
         </Table>
+        <MetricNote>
+          <strong>n&lt;20</strong> means the metric was withheld rather than zero: a median or
+          share built on fewer than twenty observations moves with a single outlier. Hover any
+          value to see how many observations it rests on. Deploy rates are additionally withheld
+          when the collected release history covers less than half the period — a rate extrapolated
+          from a few days of a quarter is not a rate.
+        </MetricNote>
       </section>
 
       {/* --- trends and mix --------------------------------------------------- */}
@@ -251,11 +364,28 @@ export default async function SquadsPage({
   )
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
+function MiniStat({
+  label,
+  value,
+  sample,
+  unit,
+}: {
+  label: string
+  value: string
+  /** Observations behind the value. Printed under it so a dash is never ambiguous. */
+  sample?: number
+  unit?: string
+}) {
   return (
     <div>
       <div className="text-[11px] uppercase tracking-wide text-[var(--color-muted)]">{label}</div>
       <div className="tnum text-sm font-semibold">{value}</div>
+      {typeof sample === 'number' ? (
+        <div className="tnum text-[11px] text-[var(--color-muted)]">
+          n&nbsp;=&nbsp;{nf(sample)}
+          {unit ? ` ${unit}` : ''}
+        </div>
+      ) : null}
     </div>
   )
 }

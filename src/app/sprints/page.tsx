@@ -60,13 +60,18 @@ export default async function SprintsPage({
       ) : (
         <>
           <div className="grid gap-3 sm:grid-cols-3">
+            {/* Sprint averages come from however many sprints Jira has closed, which is a
+                handful per board — small enough that the count belongs next to the number. */}
             <Kpi
               label="Average completion"
               value={pct(avgCompletion, 1)}
-              hint={`Across ${closed.length} closed sprints`}
+              hint="Issues completed as a share of the sprint's final scope"
               direction="higher-better"
               raw={avgCompletion}
               thresholds={{ good: 80, bad: 50 }}
+              sample={closed.length}
+              sampleUnit="closed sprints"
+              sampleFloor={4}
             />
             <Kpi
               label="Average scope creep"
@@ -75,6 +80,9 @@ export default async function SprintsPage({
               direction="lower-better"
               raw={avgScopeCreep}
               thresholds={{ good: 10, bad: 30 }}
+              sample={closed.length}
+              sampleUnit="closed sprints"
+              sampleFloor={4}
             />
             <Kpi
               label="Carryover issues"
@@ -160,7 +168,15 @@ export default async function SprintsPage({
                   <CompletionCell pct={sprint.completion_pct} />
                 </Td>
                 <Td align="right" numeric>
-                  {nf(sprint.completed_points, 1)} / {nf(sprint.committed_points, 1)}
+                  {/* Most issues in this instance carry no estimate, so "0 / 0" would read
+                      as a sprint that delivered nothing rather than one nobody pointed. */}
+                  {sprint.committed_points === 0 && sprint.completed_points === 0 ? (
+                    <span className="text-[var(--color-muted)]" title="No issues in this sprint carry a story-point estimate">
+                      not estimated
+                    </span>
+                  ) : (
+                    `${nf(sprint.completed_points, 1)} / ${nf(sprint.committed_points, 1)}`
+                  )}
                 </Td>
               </tr>
             ))}
@@ -170,7 +186,9 @@ export default async function SprintsPage({
             Committed versus added is reconstructed from the Jira changelog: an issue counts as
             committed if it was in the sprint before the start date, and as added if it joined
             afterwards. Sprints whose changelog has been truncated by Jira fall back to the sprint
-            start date, which can understate scope creep on very old sprints.
+            start date, which can understate scope creep on very old sprints. Story points are
+            recorded on under a tenth of issues here, so point columns describe estimating habits
+            more than delivery — issue counts are the reliable measure on this page.
           </MetricNote>
         </>
       )}

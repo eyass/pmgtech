@@ -1,6 +1,8 @@
 import { SquadBarChart, TrendChart } from '@/components/charts'
+import { AttributionBanner } from '@/components/coverage'
 import {
   Card,
+  GuardedValue,
   Kpi,
   MetricNote,
   Pill,
@@ -44,6 +46,13 @@ export default async function DeliveryPage({
 
   const squadKeys = squads.map((s) => s.squad_key)
 
+  // Withholding the deploy metrics is a coverage decision, not a sample-size one, so
+  // the three cards say so rather than showing a count next to a dash.
+  const thinDeployHistory = kpis.deploy_coverage_pct !== null && kpis.deploy_coverage_pct < 50
+  const deployWithheld = thinDeployHistory
+    ? `history covers ${pct(kpis.deploy_coverage_pct, 0)} of this period`
+    : undefined
+
   return (
     <div className="space-y-6">
       <div>
@@ -59,6 +68,9 @@ export default async function DeliveryPage({
           direction="higher-better"
           raw={kpis.deploys_per_week}
           thresholds={{ good: 7, bad: 1 }}
+          sample={kpis.deploy_sample}
+          sampleUnit="finished deploys"
+          withheld={deployWithheld}
         />
         <Kpi
           label="Lead time for change"
@@ -67,6 +79,8 @@ export default async function DeliveryPage({
           direction="lower-better"
           raw={kpis.median_cycle_hours}
           thresholds={{ good: 24, bad: 120 }}
+          sample={kpis.cycle_sample}
+          sampleUnit="merged MRs"
         />
         <Kpi
           label="Change failure rate"
@@ -75,6 +89,9 @@ export default async function DeliveryPage({
           direction="lower-better"
           raw={kpis.change_failure_pct}
           thresholds={{ good: 15, bad: 30 }}
+          sample={kpis.deploy_sample}
+          sampleUnit="finished deploys"
+          withheld={deployWithheld}
         />
         <Kpi
           label="Time to restore"
@@ -83,10 +100,13 @@ export default async function DeliveryPage({
           direction="lower-better"
           raw={kpis.mttr_hours}
           thresholds={{ good: 4, bad: 24 }}
+          sample={kpis.mttr_sample}
+          sampleUnit="recovered failures"
+          withheld={deployWithheld}
         />
       </div>
 
-      {kpis.deploy_coverage_pct !== null && kpis.deploy_coverage_pct < 50 ? (
+      {thinDeployHistory ? (
         <Card className="border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30">
           <p className="text-xs leading-relaxed">
             <strong>Deploy metrics withheld.</strong> Production-deployment history covers only{' '}
@@ -148,6 +168,7 @@ export default async function DeliveryPage({
           title="Review pipeline health"
           hint="Where merge requests actually lose time."
         />
+        <AttributionBanner kpis={kpis} />
         <Table
           empty="No merge request activity in this period."
           head={
@@ -178,12 +199,54 @@ export default async function DeliveryPage({
                 />
               </Td>
               <Td align="right" numeric>{nf(squad.merged_mrs)}</Td>
-              <Td align="right" numeric>{hours(squad.median_review_wait_hours)}</Td>
-              <Td align="right" numeric>{hours(squad.median_cycle_hours)}</Td>
-              <Td align="right" numeric>{hours(squad.p75_cycle_hours)}</Td>
-              <Td align="right" numeric>{pct(squad.review_coverage_pct)}</Td>
-              <Td align="right" numeric>{compact(squad.median_mr_churn)}</Td>
-              <Td align="right" numeric>{pct(squad.large_mr_pct)}</Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={hours(squad.median_review_wait_hours)}
+                  raw={squad.median_review_wait_hours}
+                  sample={squad.review_wait_sample}
+                  unit="reviewed MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={hours(squad.median_cycle_hours)}
+                  raw={squad.median_cycle_hours}
+                  sample={squad.cycle_sample}
+                  unit="merged MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={hours(squad.p75_cycle_hours)}
+                  raw={squad.p75_cycle_hours}
+                  sample={squad.cycle_sample}
+                  unit="merged MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={pct(squad.review_coverage_pct)}
+                  raw={squad.review_coverage_pct}
+                  sample={squad.merged_mrs}
+                  unit="merged MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={compact(squad.median_mr_churn)}
+                  raw={squad.median_mr_churn}
+                  sample={squad.merged_mrs}
+                  unit="merged MRs"
+                />
+              </Td>
+              <Td align="right" numeric>
+                <GuardedValue
+                  formatted={pct(squad.large_mr_pct)}
+                  raw={squad.large_mr_pct}
+                  sample={squad.merged_mrs}
+                  unit="merged MRs"
+                />
+              </Td>
               <Td align="right" numeric>{nf(squad.open_mrs)}</Td>
             </tr>
           ))}
@@ -191,7 +254,8 @@ export default async function DeliveryPage({
         <MetricNote>
           Large merge requests are those changing more than 400 lines. They correlate strongly with
           slow reviews, so a high share here usually explains a poor review-wait number better than
-          reviewer availability does.
+          reviewer availability does. <strong>n&lt;20</strong> marks a metric withheld for sample
+          size rather than a zero; hover any value for its observation count.
         </MetricNote>
       </section>
 

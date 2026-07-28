@@ -1,9 +1,11 @@
 import Link from 'next/link'
 
+import { AttributionBanner } from '@/components/coverage'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { compact, hours, nf, relativeDate } from '@/lib/format'
 import {
   getEngineerScorecards,
+  getOrgKpis,
   getSeniorityBenchmark,
   getSquads,
   PERIODS,
@@ -23,9 +25,10 @@ export default async function PeoplePage({
   const squads = await getSquads()
   const selected = squadFilter ? squads.find((s) => s.key === squadFilter) : undefined
 
-  const [engineers, benchmark] = await Promise.all([
+  const [engineers, benchmark, kpis] = await Promise.all([
     getEngineerScorecards(range, selected?.id),
     getSeniorityBenchmark(range, selected?.id),
+    getOrgKpis(range),
   ])
 
   const unassigned = engineers.filter((e) => !e.squad_id)
@@ -64,6 +67,8 @@ export default async function PeoplePage({
           whole review load, someone with no activity who may be blocked — rather than to rank people.
         </p>
       </Card>
+
+      <AttributionBanner kpis={kpis} scope="people" />
 
       {(unassigned.length > 0 || unknownLevel.length > 0) && (
         <Card className="border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30">

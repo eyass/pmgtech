@@ -34,6 +34,21 @@ export interface SquadScorecard {
   story_points: number
   median_issue_cycle_hours: number | null
   bug_ratio_pct: number | null
+
+  /**
+   * Sample counts behind the medians and ratios above, on the same 20-observation
+   * floor org_kpis uses so squad and org figures can be compared. Below the floor the
+   * metric is null: a squad median built on one issue read as a twenty-fold advantage
+   * over a squad with two hundred, which is what motivated the guard.
+   */
+  cycle_sample: number
+  review_wait_sample: number
+  deploy_sample: number
+  mttr_sample: number
+  issue_cycle_sample: number
+  story_points_sample: number
+  /** Share of the period spanned by this squad's production releases. */
+  deploy_coverage_pct: number
 }
 
 export interface OrgKpis {
@@ -57,10 +72,39 @@ export interface OrgKpis {
    */
   deploy_coverage_pct: number | null
   issues_resolved: number
-  story_points: number
+  /**
+   * Withheld (null) when fewer than half of resolved issues carry an estimate. A sum
+   * over a field a tenth of issues populate is a lower bound that moves when people
+   * start estimating rather than when output changes.
+   */
+  story_points: number | null
+  story_points_coverage_pct: number
   median_issue_cycle_hours: number | null
   bug_ratio_pct: number | null
   reviews_given: number
+
+  /**
+   * How many observations each metric rests on. The medians and ratios above are
+   * withheld (null) below a 20-observation floor: a median of four merge requests
+   * is a single anecdote wearing a statistic's clothes, and it renders identically
+   * to one built from fifteen hundred unless the count travels with it.
+   */
+  cycle_sample: number
+  review_wait_sample: number
+  review_coverage_sample: number
+  deploy_sample: number
+  mttr_sample: number
+  story_points_sample: number
+  issue_cycle_sample: number
+
+  /**
+   * Share of activity in the period that resolved to a known engineer. Every
+   * per-person and per-squad number is a slice of this: at 53.7% MR attribution,
+   * a squad total is a lower bound, not a total.
+   */
+  mr_attribution_pct: number | null
+  commit_attribution_pct: number | null
+  unattributed_mrs: number
 }
 
 export interface TrendPoint {

@@ -129,6 +129,11 @@ export default async function PersonPage({
               hint={
                 peerLevel ? `Median at level: ${hours(peerLevel.median_cycle_hours)}` : undefined
               }
+              // One person over one period is the thinnest sample on the site, so the
+              // floor is lower than the org-wide twenty — but it is still stated.
+              sample={me.merged_mrs}
+              sampleUnit="merged MRs"
+              sampleFloor={5}
             />
             <Kpi
               label="Reviews given"
@@ -138,7 +143,7 @@ export default async function PersonPage({
             <Kpi
               label="Issues resolved"
               value={nf(me.issues_resolved)}
-              hint={`${nf(me.story_points)} points · ${nf(me.bugs_resolved)} bugs`}
+              hint={`${nf(me.bugs_resolved)} bugs${me.story_points > 0 ? ` · ${nf(me.story_points)} points` : ''}`}
             />
           </div>
 
@@ -149,6 +154,9 @@ export default async function PersonPage({
               label="Review response"
               value={hours(me.median_review_response_hours)}
               hint="Median from MR open to their first comment"
+              sample={me.reviews_given}
+              sampleUnit="reviews"
+              sampleFloor={5}
             />
             <Kpi
               label="Reviews received"

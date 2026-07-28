@@ -1,6 +1,7 @@
 import Link from 'next/link'
 
 import { SquadBarChart, TrendChart } from '@/components/charts'
+import { AttributionBanner } from '@/components/coverage'
 import { SetupNotice } from '@/components/setup-notice'
 import { Bar, Card, Kpi, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { integrationStatus } from '@/lib/env'
@@ -35,6 +36,11 @@ export default async function OverviewPage({
 
   const squadKeys = squads.map((s) => s.squad_key)
 
+  const deployWithheld =
+    kpis.deploy_coverage_pct !== null && kpis.deploy_coverage_pct < 50
+      ? `history covers ${pct(kpis.deploy_coverage_pct, 0)} of this period`
+      : undefined
+
   return (
     <div className="space-y-6">
       <div>
@@ -63,6 +69,9 @@ export default async function OverviewPage({
             direction="higher-better"
             raw={kpis.deploys_per_week}
             thresholds={{ good: 7, bad: 1 }}
+            sample={kpis.deploy_sample}
+            sampleUnit="finished deploys"
+            withheld={deployWithheld}
           />
           <Kpi
             label="Lead time for change"
@@ -71,6 +80,8 @@ export default async function OverviewPage({
             direction="lower-better"
             raw={kpis.median_cycle_hours}
             thresholds={{ good: 24, bad: 120 }}
+            sample={kpis.cycle_sample}
+            sampleUnit="merged MRs"
           />
           <Kpi
             label="Change failure rate"
@@ -79,6 +90,9 @@ export default async function OverviewPage({
             direction="lower-better"
             raw={kpis.change_failure_pct}
             thresholds={{ good: 15, bad: 30 }}
+            sample={kpis.deploy_sample}
+            sampleUnit="finished deploys"
+            withheld={deployWithheld}
           />
           <Kpi
             label="Time to restore"
@@ -87,6 +101,9 @@ export default async function OverviewPage({
             direction="lower-better"
             raw={kpis.mttr_hours}
             thresholds={{ good: 4, bad: 24 }}
+            sample={kpis.mttr_sample}
+            sampleUnit="recovered failures"
+            withheld={deployWithheld}
           />
         </div>
 
@@ -103,6 +120,8 @@ export default async function OverviewPage({
             direction="lower-better"
             raw={kpis.median_review_wait_hours}
             thresholds={{ good: 4, bad: 24 }}
+            sample={kpis.review_wait_sample}
+            sampleUnit="merged MRs"
           />
           <Kpi
             label="Review coverage"
@@ -111,11 +130,15 @@ export default async function OverviewPage({
             direction="higher-better"
             raw={kpis.review_coverage_pct}
             thresholds={{ good: 90, bad: 60 }}
+            sample={kpis.review_coverage_sample}
+            sampleUnit="merged MRs"
           />
           <Kpi
             label="Issues resolved"
             value={nf(kpis.issues_resolved)}
-            hint={`${nf(kpis.story_points)} story points · ${pct(kpis.bug_ratio_pct)} bugs`}
+            hint={`${pct(kpis.bug_ratio_pct)} bugs · median ${hours(kpis.median_issue_cycle_hours)} to close`}
+            sample={kpis.issue_cycle_sample}
+            sampleUnit="issues with timings"
           />
         </div>
 
@@ -123,7 +146,9 @@ export default async function OverviewPage({
           Lead time is measured from the first commit on a branch to the merge, which is the part of
           the pipeline the team controls. Time to restore counts only failures that were actually
           followed by a successful deploy, so an unresolved incident does not silently inflate the
-          median.
+          median. Each card carries the number of observations behind it; medians built on fewer
+          than twenty are withheld rather than shown, because at that size the metric moves with a
+          single outlier.
         </MetricNote>
       </section>
 
@@ -139,6 +164,8 @@ export default async function OverviewPage({
             </Link>
           }
         />
+
+        <AttributionBanner kpis={kpis} />
 
         <Table
           empty="No squad activity in this period."
