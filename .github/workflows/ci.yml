@@ -1,0 +1,48 @@
+name: CI
+
+# Typecheck, lint and test on every pull request and on the default branch.
+# Linting in particular had never actually run: the script called `next lint`,
+# removed in Next 16, and there was no eslint config to fall back on.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22 or newer: the tests are TypeScript run directly by node's test runner
+          # via --experimental-strip-types, so there is no build step for them.
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # Last, because it is the slowest and the others localise a failure better.
+      - name: Build
+        run: npm run build
+        env:
+          # The build must not need real credentials. Every route is dynamic, so it
+          # compiles without them — if this step ever starts requiring secrets, that
+          # is a regression worth catching here.
+          NEXT_TELEMETRY_DISABLED: '1'
