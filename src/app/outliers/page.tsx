@@ -1,6 +1,7 @@
 import Link from 'next/link'
 
 import { BandPill, ShapePill } from '@/components/performance'
+import { Scatter, type ScatterPoint } from '@/components/scatter'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { hours, nf, pct } from '@/lib/format'
 import {
@@ -36,13 +37,52 @@ export const metadata = { title: 'Outliers — PMG Engineering Tracker' }
  * tally from the banding logic sits beside each engineer's score to say whether
  * the gap that produced their rank is large enough to be real.
  */
+/**
+ * The dimensions a reader can put on an axis.
+ *
+ * The composite score is deliberately not offered: it is built out of these four,
+ * so plotting it against one of them would show mostly its own reflection.
+ */
+const DIMENSIONS = {
+  throughput: {
+    label: 'Throughput',
+    get: (e: EngineerOutlier) => e.throughput_score,
+  },
+  flow: { label: 'Flow', get: (e: EngineerOutlier) => e.flow_score },
+  quality: { label: 'Quality', get: (e: EngineerOutlier) => e.quality_score },
+  collaboration: {
+    label: 'Collaboration',
+    get: (e: EngineerOutlier) => e.collaboration_score,
+  },
+} as const
+
+type DimensionKey = keyof typeof DIMENSIONS
+
+function resolveDimension(value: string | undefined, fallback: DimensionKey): DimensionKey {
+  return value && value in DIMENSIONS ? (value as DimensionKey) : fallback
+}
+
+/** "Marcin Niemirski" → "Marcin N." — short enough to sit beside a dot without colliding. */
+function shortName(full: string): string {
+  const parts = full.trim().split(/\s+/)
+  if (parts.length < 2) return parts[0] ?? full
+  return `${parts[0]} ${parts[parts.length - 1]![0]}.`
+}
+
 export default async function OutliersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ period?: string; squad?: string }>
+  searchParams: Promise<{ period?: string; squad?: string; x?: string; y?: string }>
 }) {
-  const { period, squad: squadFilter } = await searchParams
+  const { period, squad: squadFilter, x: xParam, y: yParam } = await searchParams
   const { key, range } = resolvePeriod(period)
+  // Throughput against quality by default: "how much" against "how well" is the
+  // tension a delivery lead is usually looking for.
+  const xKey = resolveDimension(xParam, 'throughput')
+  const yRaw = resolveDimension(yParam, 'quality')
+  // A dimension against itself is a diagonal line and tells nobody anything.
+  const yKey: DimensionKey =
+    yRaw === xKey ? (xKey === 'quality' ? 'throughput' : 'quality') : yRaw
 
   const squads = await getSquads()
   const selected = squadFilter ? squads.find((s) => s.key === squadFilter) : undefined
@@ -53,6 +93,32 @@ export default async function OutliersPage({
   ])
 
   const scored = engineers.filter((e) => e.score !== null)
+
+  // A dimension with no data drops out of the score rather than counting as zero,
+  // so a row can be scored overall and still have nothing to place on one axis.
+  // Those are left off the plot and counted underneath rather than put at zero.
+  const scatterPoints: ScatterPoint[] = engineers.flatMap((e) => {
+    const x = DIMENSIONS[xKey].get(e)
+    const y = DIMENSIONS[yKey].get(e)
+    if (x === null || y === null) return []
+    return [
+      {
+        id: e.engineer_id,
+        name: e.full_name,
+        shortName: shortName(e.full_name),
+        x,
+        y,
+        squad: e.squad_name,
+        level: e.seniority_label ?? e.seniority_key,
+        rank: e.rank_in_org,
+        score: e.score,
+        solid: e.score_confidence === 'high',
+        confidenceNote: e.score_confidence === 'high' ? null : e.confidence_reason,
+      },
+    ]
+  })
+  const unplaced = engineers.length - scatterPoints.length
+
   const bestSquad = squadRows[0]
   const worstSquad = squadRows[squadRows.length - 1]
   const best = scored[0]
@@ -70,7 +136,14 @@ export default async function OutliersPage({
           </p>
         </div>
         <div className="flex flex-wrap gap-1">
-          <FilterLink period={key} squad={undefined} active={!selected} label="All squads" />
+          <FilterLink
+            period={key}
+            squad={undefined}
+            active={!selected}
+            label="All squads"
+            x={xKey}
+            y={yKey}
+          />
           {squads
             .filter((s) => s.is_active)
             .map((s) => (
@@ -80,6 +153,8 @@ export default async function OutliersPage({
                 squad={s.key}
                 active={selected?.key === s.key}
                 label={s.name}
+                x={xKey}
+                y={yKey}
               />
             ))}
         </div>
@@ -121,6 +196,56 @@ export default async function OutliersPage({
       {/* --- what throughput is counting in ----------------------------------- */}
 
       <ComplexityBanner rows={engineers} />
+
+      {/* --- engineers, placed ------------------------------------------------ */}
+
+      <section>
+        <SectionHeading
+          title="Engineers, placed"
+          hint="Two dimensions against each other, to find who sits apart from the group rather than who is first. Every value here is also in the ranked table below."
+        />
+        <Card>
+          <div className="flex flex-wrap gap-x-8 gap-y-3">
+            <AxisPicker
+              axis="x"
+              legend="Across"
+              current={xKey}
+              other={yKey}
+              period={key}
+              squad={selected?.key}
+            />
+            <AxisPicker
+              axis="y"
+              legend="Up"
+              current={yKey}
+              other={xKey}
+              period={key}
+              squad={selected?.key}
+            />
+          </div>
+          <div className="mt-5 md:max-w-2xl">
+            <Scatter
+              points={scatterPoints}
+              xLabel={DIMENSIONS[xKey].label}
+              yLabel={DIMENSIONS[yKey].label}
+            />
+          </div>
+        </Card>
+        <MetricNote>
+          The two lines are the <strong>cohort median</strong>, not a target anyone set: 50 is
+          the median of each engineer&apos;s own seniority group by construction, so the
+          quadrants fall out of the score rather than being drawn on top of it. Neither axis
+          zooms tighter than 40 points, because 15 points is a full interquartile range and a
+          range fitted to the data would stretch a three-point difference across the whole
+          plot. The two axes can still cover different spans — read the tick numbers before
+          comparing a sideways distance against an upwards one. Distance from a line is
+          ordering more than magnitude in any case; the <strong>gap</strong> column in the
+          table below is what says whether a gap is material.
+          {unplaced > 0
+            ? ` ${unplaced} ${unplaced === 1 ? 'engineer is' : 'engineers are'} not plotted: a dimension with no data drops out of the score instead of counting as zero, so there is nothing to place them at.`
+            : ''}
+        </MetricNote>
+      </section>
 
       {/* --- how the score works ---------------------------------------------- */}
 
@@ -575,18 +700,78 @@ function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
   )
 }
 
+/**
+ * Which dimension sits on one axis.
+ *
+ * A chart control rather than a data filter — it changes what is drawn, not which
+ * rows are in scope, so it belongs with the chart while the period and squad
+ * filters stay in the one row at the top that scopes the whole page.
+ */
+function AxisPicker({
+  axis,
+  legend,
+  current,
+  other,
+  period,
+  squad,
+}: {
+  axis: 'x' | 'y'
+  legend: string
+  current: DimensionKey
+  other: DimensionKey
+  period: string
+  squad: string | undefined
+}) {
+  return (
+    <div>
+      <p className="text-[11px] uppercase tracking-wide text-[var(--color-muted)]">{legend}</p>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        {(Object.keys(DIMENSIONS) as DimensionKey[]).map((dimension) => {
+          const query = new URLSearchParams({ period })
+          if (squad) query.set('squad', squad)
+          // Picking the dimension that is already on the other axis swaps the two,
+          // which is what someone reaching for it means.
+          const swap = dimension === other
+          query.set('x', axis === 'x' ? dimension : swap ? current : other)
+          query.set('y', axis === 'y' ? dimension : swap ? current : other)
+          const active = dimension === current
+          return (
+            <Link
+              key={dimension}
+              href={`/outliers?${query.toString()}`}
+              aria-current={active ? 'true' : undefined}
+              className={`rounded-lg border px-2.5 py-1 text-xs transition-colors ${
+                active
+                  ? 'border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-surface)]'
+                  : 'border-[var(--color-line)] text-[var(--color-muted)] hover:text-[var(--color-ink)]'
+              }`}
+            >
+              {DIMENSIONS[dimension].label}
+            </Link>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function FilterLink({
   period,
   squad,
   active,
   label,
+  x,
+  y,
 }: {
   period: string
   squad: string | undefined
   active: boolean
   label: string
+  /** Carried through so changing squad does not reset the chart's axes. */
+  x: DimensionKey
+  y: DimensionKey
 }) {
-  const query = new URLSearchParams({ period })
+  const query = new URLSearchParams({ period, x, y })
   if (squad) query.set('squad', squad)
   return (
     <Link

@@ -17,6 +17,32 @@
   --color-bad: #dc2626;
 }
 
+/**
+ * Chart tokens.
+ *
+ * One series hue, because a scatter compares every point against every other one
+ * and the palette gates for that case only clear three categorical slots — five
+ * squad colours on one plot would be indistinguishable under colour-vision
+ * deficiency. Squad is the filter above the chart instead. Both steps were
+ * validated against this app's own surfaces (#ffffff and #121a2e) rather than
+ * against a default: lightness band, chroma floor and 3:1 contrast all pass.
+ */
+:root {
+  --chart-series: #2a78d6;
+  --chart-grid: #e2e8f0;
+  --chart-axis: #cbd5e1;
+  --chart-ref: #94a3b8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chart-series: #3987e5;
+    --chart-grid: #223049;
+    --chart-axis: #334155;
+    --chart-ref: #64748b;
+  }
+}
+
 @layer base {
   html {
     color-scheme: light dark;
@@ -34,8 +60,16 @@
   }
 }
 
+/**
+ * Dark overrides as plain custom properties, NOT as `@theme` inside the media
+ * query. Tailwind v4 hoists `@theme` blocks out to the top level, so the dark
+ * values were landing in the unconditional `:root` and overwriting the light
+ * ones — the app rendered dark in both schemes. Overriding the variables
+ * directly keeps the media query, and the utilities generated from `@theme`
+ * above resolve through the same variables, so both forms follow the scheme.
+ */
 @media (prefers-color-scheme: dark) {
-  @theme {
+  :root {
     --color-canvas: #0b1020;
     --color-surface: #121a2e;
     --color-ink: #e8edf7;
