@@ -359,3 +359,28 @@ export const COMPLEXITY_RUBRIC = {
 
 /** Coverage below this and throughput falls back to counting merge requests. */
 export const COMPLEXITY_COVERAGE_FLOOR = 60
+
+/**
+ * The ladder, most junior first. Mirrors the `seniority_levels.rank` seeded in
+ * `0001_core.sql` — the outlier RPCs return a level's key and label but not its
+ * rank, and a cohort chart has to draw the rows in ladder order rather than in
+ * whatever order the rows arrived.
+ */
+export const SENIORITY_ORDER: readonly string[] = [
+  'unknown',
+  'intern',
+  'junior',
+  'mid',
+  'senior',
+  'lead',
+  'staff',
+  'principal',
+  'manager',
+  'director',
+]
+
+/** Position on the ladder; unlisted keys sort last rather than throwing. */
+export function seniorityRank(key: string): number {
+  const i = SENIORITY_ORDER.indexOf(key)
+  return i === -1 ? SENIORITY_ORDER.length : i
+}

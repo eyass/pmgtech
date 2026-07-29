@@ -1,8 +1,10 @@
 import Link from 'next/link'
 
 import { AxisSummary } from '@/components/axis-summary'
+import { CohortStrip, type Cohort } from '@/components/cohort-strip'
 import { BandPill, ShapePill } from '@/components/performance'
 import { Scatter, type ScatterPoint } from '@/components/scatter'
+import { SquadProfile, type SquadProfileRow } from '@/components/squad-profile'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { hours, nf, pct } from '@/lib/format'
 import {
@@ -17,6 +19,7 @@ import {
   COMPLEXITY_RUBRIC,
   ENGINEER_SCORE_RUBRIC,
   scoreTone,
+  seniorityRank,
   SQUAD_SCORE_RUBRIC,
   type EngineerOutlier,
   type ScoreConfidence,
@@ -119,6 +122,38 @@ export default async function OutliersPage({
     ]
   })
   const unplaced = engineers.length - scatterPoints.length
+
+  // Cohorts in ladder order, because the ranking's whole claim is that people are
+  // scored against their own level and the rows have to read as a ladder to check it.
+  const cohorts: Cohort[] = Object.values(
+    scored.reduce<Record<string, Cohort>>((acc, e) => {
+      acc[e.seniority_key] ??= {
+        key: e.seniority_key,
+        label: e.seniority_label ?? e.seniority_key,
+        members: [],
+      }
+      acc[e.seniority_key]!.members.push({
+        id: e.engineer_id,
+        name: e.full_name,
+        score: e.score!,
+        solid: e.score_confidence === 'high',
+        note: e.score_confidence === 'high' ? null : e.confidence_reason,
+      })
+      return acc
+    }, {}),
+  ).sort((a, b) => seniorityRank(a.key) - seniorityRank(b.key))
+
+  const squadProfiles: SquadProfileRow[] = squadRows.map((s) => ({
+    key: s.squad_key,
+    name: s.squad_name,
+    score: s.score,
+    dimensions: {
+      throughput: s.throughput_score,
+      flow: s.flow_score,
+      quality: s.quality_score,
+      collaboration: s.collaboration_score,
+    },
+  }))
 
   const bestSquad = squadRows[0]
   const worstSquad = squadRows[squadRows.length - 1]
@@ -250,6 +285,52 @@ export default async function OutliersPage({
           {unplaced > 0
             ? ` ${unplaced} ${unplaced === 1 ? 'engineer is' : 'engineers are'} not plotted: a dimension with no data drops out of the score instead of counting as zero, so there is nothing to place them at.`
             : ''}
+        </MetricNote>
+      </section>
+
+      {/* --- is the ranking separating anybody -------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="Spread within each level"
+          hint="One dot per engineer, on the level they are actually scored against. The question this answers is whether the ranking is separating anyone at all."
+        />
+        <Card>
+          <CohortStrip cohorts={cohorts} />
+        </Card>
+        <MetricNote>
+          This is also the score&apos;s own integrity check. A score is built so that 50 is the
+          median of that engineer&apos;s level, so each row&apos;s dots{' '}
+          <strong>have to straddle the line</strong> with roughly half either side. A row sitting
+          entirely on one side is not a strong or a weak cohort — it means the scoring is wrong or
+          the cohort is too small to have a median, and the row count next to each label says which.
+          What the rows show for this org is <strong>bunching</strong>: most people sit inside one
+          interquartile range of their own level, so the honest read is a tight cluster with one or
+          two genuinely separated dots rather than an even spread from first to last. Levels with
+          fewer than three people are marked <em>no median</em>, because there is nothing for a
+          median to be the middle of.
+        </MetricNote>
+      </section>
+
+      {/* --- squads, dimension by dimension ---------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="Squads, dimension by dimension"
+          hint="The four dimensions behind each squad's score, so a single number never hides which half of the work earned it."
+        />
+        <Card>
+          <SquadProfile rows={squadProfiles} />
+        </Card>
+        <MetricNote>
+          These tracks are the one thing on this page that is <strong>not</strong> relative. Squads
+          are scored against the delivery targets on the framework page, so the full 0-100 run is
+          drawn every time: 0 is the bad threshold, 100 is the good one, and the tick is genuinely
+          halfway between them rather than the median of the other squads. That is deliberate — a
+          strong org should not manufacture a loser, and a good squad should lose nothing to good
+          colleagues. It is also why these tracks never rescale to the data the way the engineer
+          charts above do: here the thresholds are the point, so shrinking the axis to the spread
+          would throw away the only fixed reference on the page.
         </MetricNote>
       </section>
 

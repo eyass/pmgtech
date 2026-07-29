@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 
+import { MEDIAN, scoreDomain, ticksIn } from '@/lib/chart-scale'
+
 /**
  * Where engineers sit against each other on two of the four dimensions.
  *
@@ -51,31 +53,6 @@ const PAD = { top: 18, right: 20, bottom: 52, left: 52 }
 const W = PLOT_W + PAD.left + PAD.right
 const H = PLOT_H + PAD.top + PAD.bottom
 
-/** Padded, floored at a 40-point span, always containing the median, snapped to 5s. */
-function domainOf(values: number[]): [number, number] {
-  if (values.length === 0) return [30, 70]
-  let lo = Math.min(...values)
-  let hi = Math.max(...values)
-  const pad = Math.max(2, (hi - lo) * 0.06)
-  lo -= pad
-  hi += pad
-  // The median lines have to be on the plot or the quadrants make no sense.
-  lo = Math.min(lo, 46)
-  hi = Math.max(hi, 54)
-  if (hi - lo < 40) {
-    const centre = (hi + lo) / 2
-    lo = centre - 20
-    hi = centre + 20
-  }
-  return [Math.max(0, Math.floor(lo / 5) * 5), Math.min(100, Math.ceil(hi / 5) * 5)]
-}
-
-function ticksFor([lo, hi]: [number, number]): number[] {
-  const out: number[] = []
-  for (let t = Math.ceil(lo / 10) * 10; t <= hi; t += 10) out.push(t)
-  return out
-}
-
 export function Scatter({
   points,
   xLabel,
@@ -95,8 +72,8 @@ export function Scatter({
     )
   }
 
-  const xDomain = domainOf(points.map((p) => p.x))
-  const yDomain = domainOf(points.map((p) => p.y))
+  const xDomain = scoreDomain(points.map((p) => p.x))
+  const yDomain = scoreDomain(points.map((p) => p.y))
   const px = (v: number) => PAD.left + ((v - xDomain[0]) / (xDomain[1] - xDomain[0])) * PLOT_W
   const py = (v: number) => PAD.top + PLOT_H - ((v - yDomain[0]) / (yDomain[1] - yDomain[0])) * PLOT_H
 
@@ -108,7 +85,7 @@ export function Scatter({
   // backfilling would put labels on the most ordinary points on the plot.
   const labelled = new Set<string>()
   const candidates = [...placed]
-    .sort((a, b) => Math.hypot(b.x - 50, b.y - 50) - Math.hypot(a.x - 50, a.y - 50))
+    .sort((a, b) => Math.hypot(b.x - MEDIAN, b.y - MEDIAN) - Math.hypot(a.x - MEDIAN, a.y - MEDIAN))
     .slice(0, 6)
   for (const p of candidates) {
     // A name next to two touching dots points at both of them; leave those to hover.
@@ -133,7 +110,7 @@ export function Scatter({
         aria-label={`${yLabel} against ${xLabel} for ${points.length} engineers`}
       >
         {/* --- grid, recessive ---------------------------------------------- */}
-        {ticksFor(xDomain).map((t) => (
+        {ticksIn(xDomain).map((t) => (
           <g key={`x${t}`}>
             <line
               x1={px(t)}
@@ -153,7 +130,7 @@ export function Scatter({
             </text>
           </g>
         ))}
-        {ticksFor(yDomain).map((t) => (
+        {ticksIn(yDomain).map((t) => (
           <g key={`y${t}`}>
             <line
               x1={PAD.left}
@@ -176,8 +153,8 @@ export function Scatter({
 
         {/* --- the cohort median, which is what 50 means -------------------- */}
         <line
-          x1={px(50)}
-          x2={px(50)}
+          x1={px(MEDIAN)}
+          x2={px(MEDIAN)}
           y1={PAD.top}
           y2={PAD.top + PLOT_H}
           stroke="var(--chart-ref)"
@@ -186,8 +163,8 @@ export function Scatter({
         <line
           x1={PAD.left}
           x2={PAD.left + PLOT_W}
-          y1={py(50)}
-          y2={py(50)}
+          y1={py(MEDIAN)}
+          y2={py(MEDIAN)}
           stroke="var(--chart-ref)"
           strokeWidth={1}
         />
