@@ -163,6 +163,78 @@ export class GitLabClient {
   }
 
   /**
+   * Per-file change metadata for a merge request, without the diff bodies.
+   *
+   * This is the only source here that answers "which files, and how much of each"
+   * without downloading the code. REST has no such endpoint — `/diffs` and
+   * `/changes` both bundle the diff text, so a large merge request costs megabytes
+   * — whereas GraphQL's `diffStats` is a list of `{path, additions, deletions}` and
+   * nothing else, in one request.
+   *
+   * Worth it for more than bandwidth: the paths are what let a lockfile bump stop
+   * counting as five thousand lines of work (see `file-classes.ts`). Line counts
+   * alone cannot tell that apart from a refactor.
+   *
+   * Returns null rather than throwing when GraphQL is unavailable or the merge
+   * request cannot be read, so a caller falls back to commit sums instead of losing
+   * the slice. `errors` in a 200 response is GraphQL's normal failure channel and is
+   * treated as absence, not as success.
+   */
+  async mergeRequestDiffStats(
+    projectPath: string,
+    iid: number,
+  ): Promise<{
+    files: { path: string; additions: number; deletions: number }[]
+    summary: { additions: number; deletions: number; fileCount: number } | null
+  } | null> {
+    const query = `
+      query mrDiffStats($project: ID!, $iid: String!) {
+        project(fullPath: $project) {
+          mergeRequest(iid: $iid) {
+            diffStatsSummary { additions deletions fileCount }
+            diffStats { path additions deletions }
+          }
+        }
+      }`
+
+    try {
+      const { data } = await requestJson<{
+        data?: {
+          project?: {
+            mergeRequest?: {
+              diffStatsSummary?: { additions: number; deletions: number; fileCount: number } | null
+              diffStats?: { path: string; additions: number; deletions: number }[] | null
+            } | null
+          } | null
+        }
+        errors?: { message: string }[]
+      }>(`${this.host}/api/graphql`, {
+        source: 'gitlab',
+        method: 'POST',
+        headers: {
+          'PRIVATE-TOKEN': this.token,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query, variables: { project: projectPath, iid: String(iid) } }),
+      })
+
+      if (data.errors?.length) return null
+      const mr = data.data?.project?.mergeRequest
+      if (!mr) return null
+      const files = mr.diffStats ?? []
+      // An empty file list with no summary means GraphQL answered but knows nothing
+      // about this merge request's diff — absence, not a change of size zero.
+      if (files.length === 0 && !mr.diffStatsSummary) return null
+      return { files, summary: mr.diffStatsSummary ?? null }
+    } catch (error) {
+      if (error instanceof IntegrationError && [400, 403, 404, 405].includes(error.status)) {
+        return null
+      }
+      throw error
+    }
+  }
+
+  /**
    * Keyset-free offset pagination. GitLab caps per_page at 100; we stop as soon
    * as a short page comes back or the caller's limit is reached.
    */
