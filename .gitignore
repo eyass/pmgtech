@@ -16,3 +16,7 @@ next-env.d.ts
 npm-debug.log*
 yarn-error.log*
 .eslintcache
+
+# Agent worktrees. Transient full-repo checkouts created per subagent — never
+# commit them: they are working copies, not source, and they are locked while in use.
+.claude/worktrees/
