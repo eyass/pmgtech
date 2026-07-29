@@ -53,10 +53,14 @@ export default async function PerformancePage({
           <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--color-muted)]">
             Four dimensions, used at two altitudes. At <strong>team level</strong> these are
             performance metrics and it is reasonable to manage on them. At{' '}
-            <strong>individual level</strong> they are inputs to a conversation — the tool shows a
-            profile shape and a within-level band, never a score or a ranking. The performance
-            assessment of record is the one a human writes, and there is a place to record it on
-            each person&apos;s page.
+            <strong>individual level</strong> they are inputs to a conversation: a profile shape and
+            a within-level band here, and a 0-100 score against the same level cohort on{' '}
+            <Link href="/outliers" className="underline">
+              Outliers
+            </Link>
+            . Impact contributes nothing to that score, because there is no telemetry for it — which
+            is the honest statement of the score&apos;s ceiling. The performance assessment of record
+            is the one a human writes, and there is a place to record it on each person&apos;s page.
           </p>
 
           <div className="mt-4 grid gap-3 md:grid-cols-2">

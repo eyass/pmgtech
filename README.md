@@ -1,8 +1,8 @@
 # PMG Engineering Tracker
 
 Delivery health for the PMG engineering org, split by squad — **Team Buyer**,
-**Team Seller**, **Team Monetization** and **Team Growth** — built from GitLab,
-Jira and HiBob.
+**Team Seller**, **Team Monetization**, **Team Growth** and **DevExp** — built
+from GitLab, Jira and HiBob.
 
 Next.js 16 on Vercel, Postgres on Supabase. Aggregation happens in Postgres, so a
 page render is a handful of RPC calls rather than a fan-out of row fetches.
@@ -19,6 +19,7 @@ page render is a handful of RPC calls rather than a fan-out of row fetches.
 | **Delivery** | DORA with each definition stated inline, plus where merge requests actually lose time. |
 | **Sprints** | Committed vs added mid-sprint vs completed, carryover, and scope creep. |
 | **People** | Per-engineer activity, benchmarked against the median for their own level rather than the whole org. |
+| **Outliers** | Top and bottom, scored and ranked: engineers 0-100 against their own seniority cohort, squads 0-100 against absolute targets. Every sub-score and input is on the row, and thin samples are flagged rather than quietly ranked. |
 | **Admin** | Connection status, squad/board/repo mappings, unmapped identities, sync history. |
 
 ### On individual metrics
@@ -28,6 +29,15 @@ heavily on what someone is assigned, and time spent reviewing, mentoring, on
 incidents and on design does not show up in a merge-request count. Seniority
 benchmarks deliberately hide any level with fewer than two people so no
 individual is singled out by a median.
+
+Outliers does score and rank individuals, which those pages deliberately do not.
+The score is cohort-relative — 50 is the median for the engineer's own level, and
+15 points is one interquartile range of that cohort's spread — so a tight ranking
+means people are doing similar work, not that one of them is failing. Each row
+carries the materiality tally beside its score to say whether the gap behind its
+rank is real, and a confidence flag when it rests on too little. `Impact`
+contributes nothing, because there is no telemetry for it. Full rubric and the
+limits in [docs/measurement-framework.md](docs/measurement-framework.md#scoring-and-ranking).
 
 ---
 
@@ -91,11 +101,11 @@ Three things catch people out on the first deploy:
   ~300-second budget and resumes from its cursors, so a 12-month first pass would
   take many days at one run per day. Drive the backfill from the admin page instead
   and let the cron keep it current afterwards.
-- **`main` started as an empty root commit**, created only to give the first pull
-  request a base. Vercel builds the production branch, so until the feature branch
-  is merged, production has nothing in it. Either merge to `main` first, or point
-  **Settings → Git → Production Branch** at the branch that has the code. Branch
-  pushes still get preview deployments either way.
+- **Production only ever builds `main`.** Vercel builds the production branch, so
+  unmerged code isn't live however green its preview is — merge to `main` to deploy.
+  Don't shortcut that by pointing **Settings → Git → Production Branch** at a
+  feature branch; production ends up tracking a branch that later gets deleted.
+  Branch pushes still get preview deployments.
 
 Set the environment variables for Preview as well as Production if you want branch
 deployments to work — a preview build with no `NEXT_PUBLIC_SUPABASE_URL` compiles
@@ -201,6 +211,28 @@ People-first, with fallbacks:
   squad that owns the repository.
 - **Jira issues** — a manual override, then the sprint's board, then the
   assignee's squad, then the Jira project's squad.
+
+### Two ways to take someone out, for two different problems
+
+- **Exclude from metrics** (`include_in_metrics`) takes a person out of the
+  denominators — headcount, cohorts, per-engineer rates — and keeps everything
+  they shipped counting towards their squad. Managers and leadership default to
+  excluded from their HiBob title. This is the tool for someone whose job is not
+  measured in merge requests.
+- **Ignore** (`is_ignored`, migration `0020_ignored_data.sql`) takes the row out
+  of the product altogether: no headcount, no cohort, no squad total, no profile
+  page, and nothing they authored, reviewed or was assigned counts anywhere. This
+  is the tool for a row that should not exist — a duplicate person, a contractor
+  nobody tracks, a placeholder squad. Production deployments are the exception,
+  because a deploy is a fact about the system rather than about the person who
+  triggered it.
+
+Ignoring a squad takes its members with it, recorded as such, so restoring the
+squad restores exactly the people it took and leaves anyone ignored in their own
+right alone. Rows are kept rather than deleted — deleting one invites the next
+sync to recreate it and takes its identity mappings with it — and the flags an
+ignored row loses are remembered, so restoring hands them back rather than
+guessing. Both are set on the admin page.
 
 ### Resumable sync
 

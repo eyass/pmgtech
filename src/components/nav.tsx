@@ -11,6 +11,7 @@ const LINKS = [
   { href: '/delivery', label: 'Delivery' },
   { href: '/sprints', label: 'Sprints' },
   { href: '/people', label: 'People' },
+  { href: '/outliers', label: 'Outliers' },
   { href: '/performance', label: 'Framework' },
   { href: '/admin', label: 'Admin' },
 ]

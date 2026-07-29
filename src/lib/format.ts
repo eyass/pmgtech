@@ -58,11 +58,17 @@ export function bucketLabel(value: string, bucket: 'day' | 'week' | 'month'): st
   return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
+// Keyed to match the colour column on squads, so a badge and a chart series
+// agree. A squad missing from here falls back to grey rather than breaking.
 export const SQUAD_COLOURS: Record<string, string> = {
   buyer: '#2563eb',
   seller: '#059669',
   monetization: '#d97706',
   growth: '#7c3aed',
+  devexp: '#0891b2',
+  product: '#db2777',
+  data: '#65a30d',
+  security: '#dc2626',
 }
 
 export function squadColour(key: string | null | undefined): string {

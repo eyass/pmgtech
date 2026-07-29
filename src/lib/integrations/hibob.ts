@@ -156,7 +156,7 @@ function normalisePerson(raw: HiBobEmployee): HiBobPerson {
 }
 
 /**
- * Map a HiBob department string onto one of our four squads.
+ * Map a HiBob department string onto one of the product squads.
  *
  * HiBob departments rarely match squad names exactly ("Engineering — Buyer",
  * "Tech / Seller Squad"), so matching is substring-based on the squad keyword.
@@ -170,5 +170,6 @@ export function squadKeyFromDepartment(department: string | null): string | null
   if (/\bseller?s?\b|\bsupply\b/.test(d)) return 'seller'
   if (/monet|\bpayments?\b|\bpetpay\b|\bpricing\b/.test(d)) return 'monetization'
   if (/growth|acquisition|retention|lifecycle/.test(d)) return 'growth'
+  if (/devex|developer experience|platform|\bdevops\b|\bsre\b/.test(d)) return 'devexp'
   return null
 }

@@ -10,7 +10,7 @@ import './globals.css'
 export const metadata: Metadata = {
   title: 'PMG Engineering Tracker',
   description:
-    'Delivery health across Team Buyer, Seller, Monetization and Growth, from GitLab, Jira and HiBob.',
+    'Delivery health across Team Buyer, Seller, Monetization, Growth and DevExp, from GitLab, Jira and HiBob.',
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

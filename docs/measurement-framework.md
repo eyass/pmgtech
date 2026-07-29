@@ -12,8 +12,9 @@ Four dimensions, used at two altitudes. Live in the app at `/performance`.
 | **Impact** | Was the work worth building? | Did they work on the right things? | **Human only** |
 
 At **team level** these are performance metrics; managing on them is reasonable. At **individual
-level** they are inputs to a conversation. The tool shows a profile shape and a within-level band,
-never a score and never a ranking.
+level** they are inputs to a conversation — plus, since the Outliers page, a score and a ranking.
+See [Scoring and ranking](#scoring-and-ranking) for what the score is, and what it still refuses to
+do.
 
 ---
 
@@ -63,9 +64,52 @@ cannot see enough to have an opinion, the second means it can see and the engine
 cohort. Profile shape is deliberately exempt — it is descriptive rather than evaluative, so landing
 just either side of the median costs nobody anything.
 
-And a fifth guardrail by omission: **there is no composite individual score.** Nothing to sort by,
-nothing to stack-rank on. This is deliberate — "reviews a lot, ships less" is information, and
-flattening it to a number destroys exactly the signal a manager needs.
+---
+
+## Scoring and ranking
+
+This section used to say there was no composite individual score — nothing to sort by, nothing to
+stack-rank on. That changed by decision: `/outliers` scores engineers and squads 0-100 and ranks
+both. The reasoning that produced the old position has not been thrown away, though, because it was
+about a specific failure — a single number that flattens "reviews a lot, ships less" into a grade,
+and that nobody can take apart afterwards. The score is built against that failure:
+
+| Property | Engineers | Squads |
+| --- | --- | --- |
+| Baseline | The median of their **own seniority cohort** | **Absolute targets**, not the other squads |
+| What 50 means | The cohort median — not half marks | Halfway between the bad and good thresholds |
+| Scale | ±1 interquartile range of the cohort's spread = ±15 points | Linear between `bad` = 0 and `good` = 100 |
+| Weights | Four dimensions, 25 each | Four dimensions, 25 each |
+| Missing data | Dimension drops out, remaining weights renormalise — never a zero | Same |
+
+Dimension inputs, and the within-dimension weights:
+
+| Dimension | Engineers | Squads |
+| --- | --- | --- |
+| Throughput | Merged MRs ×2, resolved issues ×1 | MRs per engineer per week ×2 (good 4, bad 1), production releases per week ×1 (good 5, bad 1) |
+| Flow | Median cycle time | Median cycle time (good 24h, bad 120h) |
+| Quality | Review coverage received ×2, large-MR share ×1, reverts ×1 | Change failure rate (good 15%, bad 30%), time to restore (good 4h, bad 24h) |
+| Collaboration | Reviews given ×2, colleagues reviewed for ×1 | Review coverage (good 90%, bad 60%), reviews per engineer per week (good 8, bad 2) |
+
+Six of the squad thresholds are the team targets already used on `/performance`. The two
+per-engineer rates are new, and were set from this org's own spread rather than from anything
+published — they are the most arguable numbers in the scoring and they live in exactly one place,
+`0021_outliers.sql`.
+
+### What the score still will not do
+
+- **It will not compare across levels.** Percentile bands and the score both use the seniority
+  cohort. A junior is never measured against a staff engineer.
+- **It will not pretend to be precise.** Every ranked row carries the materiality tally beside its
+  score. Where the tally reads `even`, the gap that produced the rank did not clear the gates in the
+  table above, and the ordering is ordering — not distance. In a team doing similar work, most rows
+  read `even`, and that is the correct answer rather than a failure to discriminate.
+- **It will not hide thin data behind a number.** A score built on two merged merge requests, or
+  against a cohort of one, still appears — but flagged `thin data` or `no cohort`, with the reason.
+- **It will not become the assessment.** The performance assessment of record is still the one a
+  human writes, recorded on the person's page. Impact carries no telemetry at all and therefore
+  contributes nothing to the score, which is itself a statement about the score's ceiling: the
+  dimension that asks whether the work was worth building is the one it cannot see.
 
 ---
 
@@ -158,7 +202,10 @@ tool can count. Assess those people on human input alone.
 
 ### Do not
 
-- Rank people on any number here, or build a leaderboard from the profile table.
+- Read the ranking on `/outliers` as an ordering of people's worth, or paste it into a calibration
+  meeting as the input. It ranks four dimensions of telemetry, one of the four dimensions is missing
+  from it entirely, and the rows that read `even` are not distinguishable from each other.
+- Act on a score flagged `thin data` or `no cohort` without opening the person's page first.
 - Set individual targets on flow, quality or collaboration metrics. Targets belong to squads.
 - Use these numbers as the primary evidence in a performance-management process. They are one input
   to a judgement a human owns.

@@ -4,7 +4,13 @@
  * maintained by hand and kept in step with the migrations.
  */
 
-export type SquadKey = 'buyer' | 'seller' | 'monetization' | 'growth'
+/**
+ * Squads are rows in `squads`, not a fixed set — DevExp was added after the
+ * four product squads, and the admin screen can add more. Kept as a named
+ * string so the RPC shapes below still read as squad keys rather than
+ * anonymous strings.
+ */
+export type SquadKey = string
 
 export interface SquadScorecard {
   squad_id: string
@@ -221,6 +227,12 @@ export interface SquadRow {
   colour: string
   sort_order: number
   is_active: boolean
+  /**
+   * Taken out of the product altogether — a placeholder squad, or one that never
+   * existed outside a spreadsheet. Only the admin screen ever sees a true here;
+   * every other read path filters these rows out. See migration 0020.
+   */
+  is_ignored: boolean
 }
 
 export interface EngineerRow {
@@ -244,6 +256,15 @@ export interface EngineerRow {
   squad_id: string | null
   squad_source: string
   hibob_id: string | null
+  /**
+   * Taken out of the product altogether: not a head, not a cohort member, and
+   * nothing they authored, reviewed or was assigned counts anywhere. Stronger than
+   * `include_in_metrics`, which only gates denominators. Only the admin screen ever
+   * sees a true here. See migration 0020.
+   */
+  is_ignored: boolean
+  /** 'squad' means they were ignored by their squad being ignored, not in their own right. */
+  ignored_source: 'manual' | 'squad'
 }
 
 export interface SyncRunRow {

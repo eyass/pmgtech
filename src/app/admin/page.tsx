@@ -15,10 +15,10 @@ import { currentUser } from '@/lib/auth'
 import { integrationStatus } from '@/lib/env'
 import { nf, pct, relativeDate } from '@/lib/format'
 import {
-  getEngineers,
+  getEngineersForAdmin,
   getGitLabProjects,
   getJiraBoards,
-  getSquads,
+  getSquadsForAdmin,
   getBridgeSuggestions,
   getSquadSuggestions,
   getSyncAlerts,
@@ -39,8 +39,10 @@ import {
   setEngineerSeniority,
   setEngineerSquad,
   setProjectSquad,
+  toggleEngineerIgnored,
   toggleEngineerMetrics,
   toggleProjectTracked,
+  toggleSquadIgnored,
 } from './actions'
 
 export const dynamic = 'force-dynamic'
@@ -61,8 +63,10 @@ export default async function AdminPage() {
     squadHints,
     syncAlerts,
   ] = await Promise.all([
-    getSquads(),
-    getEngineers(),
+    // The admin variants include ignored rows. This is the one screen that shows
+    // them, because it is where they are restored.
+    getSquadsForAdmin(),
+    getEngineersForAdmin(),
     getGitLabProjects(),
     getJiraBoards(),
     getSyncRuns(15),
@@ -74,10 +78,18 @@ export default async function AdminPage() {
   ])
 
   const status = integrationStatus()
-  const squadOptions = squads.map((s) => ({ id: s.id, name: s.name }))
+  // Nothing gets assigned or linked to an ignored row — the result would be invisible
+  // everywhere it matters — so the pickers only offer live ones.
+  const squadOptions = squads.filter((s) => !s.is_ignored).map((s) => ({ id: s.id, name: s.name }))
   const engineerOptions = engineers
-    .filter((e) => e.is_active)
+    .filter((e) => e.is_active && !e.is_ignored)
     .map((e) => ({ id: e.id, name: `${e.display_name ?? e.full_name}${e.email ? ` (${e.email})` : ''}` }))
+  const membersBySquad = new Map<string, number>()
+  for (const engineer of engineers) {
+    if (!engineer.squad_id) continue
+    membersBySquad.set(engineer.squad_id, (membersBySquad.get(engineer.squad_id) ?? 0) + 1)
+  }
+  const ignoredCount = engineers.filter((e) => e.is_ignored).length
 
   return (
     <div className="space-y-6">
@@ -384,6 +396,79 @@ export default async function AdminPage() {
         </Table>
       </section>
 
+      {/* --- squads ----------------------------------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="Squads"
+          hint="Ignoring a squad takes it out of the product along with its members and everything attributed to it — for a placeholder team, or one that only ever existed in a spreadsheet. Reversible: restoring brings back exactly the people it took."
+        />
+        <Table
+          empty="No squads yet."
+          head={
+            <>
+              <Th>Squad</Th>
+              <Th>Key</Th>
+              <Th align="right" title="People whose squad this is, ignored or not">
+                Members
+              </Th>
+              <Th align="right">Status</Th>
+              <Th align="right">In the app</Th>
+            </>
+          }
+        >
+          {squads.map((squad) => {
+            const members = membersBySquad.get(squad.id) ?? 0
+            return (
+              <tr key={squad.id} className={squad.is_ignored ? 'opacity-60' : undefined}>
+                <Td>
+                  {squad.is_ignored ? (
+                    <span>{squad.name}</span>
+                  ) : (
+                    <Link href={`/squads/${squad.key}`} className="hover:underline">
+                      {squad.name}
+                    </Link>
+                  )}
+                  {squad.description ? (
+                    <div className="text-xs text-[var(--color-muted)]">{squad.description}</div>
+                  ) : null}
+                </Td>
+                <Td className="font-mono text-xs">{squad.key}</Td>
+                <Td align="right" numeric>{nf(members)}</Td>
+                <Td align="right">
+                  <Pill tone={squad.is_ignored ? 'bad' : squad.is_active ? 'good' : 'neutral'}>
+                    {squad.is_ignored ? 'ignored' : squad.is_active ? 'active' : 'inactive'}
+                  </Pill>
+                </Td>
+                <Td align="right">
+                  {readOnly ? (
+                    <span className="text-xs text-[var(--color-muted)]">admin only</span>
+                  ) : (
+                    <ToggleButton
+                      action={toggleSquadIgnored}
+                      fields={{ squadId: squad.id, ignored: String(!squad.is_ignored) }}
+                      label={squad.is_ignored ? 'Restore' : 'Ignore'}
+                      title={
+                        squad.is_ignored
+                          ? 'Put this squad and the people it took with it back into every metric'
+                          : 'Remove this squad, its members and everything attributed to it from every metric'
+                      }
+                      confirm={
+                        squad.is_ignored
+                          ? undefined
+                          : `Ignore ${squad.name}?\n\n${
+                              members === 1 ? '1 person' : `${members} people`
+                            } and everything attributed to this squad will disappear from every metric until it is restored.`
+                      }
+                    />
+                  )}
+                </Td>
+              </tr>
+            )
+          })}
+        </Table>
+      </section>
+
       {/* --- engineers -------------------------------------------------------- */}
 
       <section>
@@ -395,7 +480,7 @@ export default async function AdminPage() {
           {readOnly ? (
             <p className="text-xs text-[var(--color-muted)]">Admin access required.</p>
           ) : (
-            <CreateEngineerForm action={createEngineer} squads={squads} levels={levels} />
+            <CreateEngineerForm action={createEngineer} squads={squadOptions} levels={levels} />
           )}
         </Card>
       </section>
@@ -417,16 +502,24 @@ export default async function AdminPage() {
                 In metrics
               </Th>
               <Th align="right">Automation</Th>
+              <Th align="right" title="An ignored person is not in the product at all: no headcount, no cohort, and nothing they authored, reviewed or was assigned counts anywhere.">
+                In the app
+              </Th>
               <Th align="right">Status</Th>
             </>
           }
         >
           {engineers.map((engineer) => (
-            <tr key={engineer.id}>
+            <tr key={engineer.id} className={engineer.is_ignored ? 'opacity-60' : undefined}>
               <Td>
-                <Link href={`/people/${engineer.id}`} className="hover:underline">
-                  {engineer.display_name ?? engineer.full_name}
-                </Link>
+                {/* An ignored person has no profile page — it 404s — so it is not linked. */}
+                {engineer.is_ignored ? (
+                  <span>{engineer.display_name ?? engineer.full_name}</span>
+                ) : (
+                  <Link href={`/people/${engineer.id}`} className="hover:underline">
+                    {engineer.display_name ?? engineer.full_name}
+                  </Link>
+                )}
                 <div className="text-xs text-[var(--color-muted)]">{engineer.email ?? 'no email'}</div>
               </Td>
               <Td className="text-xs">{engineer.job_title ?? '—'}</Td>
@@ -498,8 +591,35 @@ export default async function AdminPage() {
                 )}
               </Td>
               <Td align="right">
-                <Pill tone={engineer.is_active ? 'good' : 'neutral'}>
-                  {engineer.is_active ? 'active' : 'inactive'}
+                {readOnly ? (
+                  <Pill tone={engineer.is_ignored ? 'bad' : 'good'}>
+                    {engineer.is_ignored ? 'ignored' : 'yes'}
+                  </Pill>
+                ) : engineer.is_ignored && engineer.ignored_source === 'squad' ? (
+                  // Restoring them individually would not hold: the trigger puts anyone
+                  // in an ignored squad straight back. The squad is the thing to restore.
+                  <span className="text-xs text-[var(--color-muted)]">via squad</span>
+                ) : (
+                  <ToggleButton
+                    action={toggleEngineerIgnored}
+                    fields={{ engineerId: engineer.id, ignored: String(!engineer.is_ignored) }}
+                    label={engineer.is_ignored ? 'Restore' : 'Ignore'}
+                    title={
+                      engineer.is_ignored
+                        ? 'Put them and their history back into every metric'
+                        : 'Not a row that belongs in the product: removes them and everything they authored, reviewed or was assigned from every metric'
+                    }
+                    confirm={
+                      engineer.is_ignored
+                        ? undefined
+                        : `Ignore ${engineer.full_name}?\n\nThey and everything they authored, reviewed or was assigned will disappear from every metric until they are restored. Use "Exclude" instead to keep their work counting towards their squad.`
+                    }
+                  />
+                )}
+              </Td>
+              <Td align="right">
+                <Pill tone={engineer.is_ignored ? 'bad' : engineer.is_active ? 'good' : 'neutral'}>
+                  {engineer.is_ignored ? 'ignored' : engineer.is_active ? 'active' : 'inactive'}
                 </Pill>
               </Td>
             </tr>
@@ -512,6 +632,19 @@ export default async function AdminPage() {
           ICs makes the squad look 20% slower than it is. Nothing they shipped is dropped: their
           merge requests, reviews and commits still count towards their squad and still appear on
           their own profile. Toggling it here pins the choice against later syncs.
+        </MetricNote>
+        <MetricNote>
+          <strong>Ignoring</strong> is the other tool, for a row that should not be in the product
+          at all — a duplicate person, a contractor nobody tracks, an account that turned out to be
+          machinery. It removes them <em>and</em> everything attributed to them: no headcount, no
+          cohort, no squad total, no profile page. Production deployments are the exception, because
+          a deploy is a fact about the system rather than about the person who triggered it, and
+          dropping it would deflate deploy frequency and change failure rate. The row is kept rather
+          than deleted — deleting it invites the next sync to recreate it and takes its identity
+          mappings with it — so restoring gives back the level, squad and metric inclusion it had.
+          {ignoredCount > 0
+            ? ` ${ignoredCount} ${ignoredCount === 1 ? 'person is' : 'people are'} ignored right now.`
+            : ''}
         </MetricNote>
       </section>
 

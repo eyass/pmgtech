@@ -29,8 +29,8 @@ export default async function LoginPage({
         </div>
 
         <p className="mt-3 text-sm text-[var(--color-muted)]">
-          Delivery health across Team Buyer, Seller, Monetization and Growth, built from GitLab,
-          Jira and HiBob.
+          Delivery health across Team Buyer, Seller, Monetization, Growth and DevExp, built from
+          GitLab, Jira and HiBob.
         </p>
 
         {error === 'domain' ? (
