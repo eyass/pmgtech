@@ -3,9 +3,11 @@ import { loadBridgeCandidates, type BridgeRow } from '@/lib/sync/bridge'
 import type {
   AssessmentRow,
   AssessmentSummaryRow,
+  EngineerOutlier,
   EngineerProfile,
   KnowledgeConcentrationRow,
   PerformanceDimension,
+  SquadOutlier,
   TeamHealth,
 } from '@/lib/types/performance'
 import type {
@@ -326,6 +328,25 @@ export function getEngineerProfiles(range: DateRange, squadId?: string, engineer
     p_squad_id: squadId ?? null,
     p_engineer_id: engineerId ?? null,
   })
+}
+
+/**
+ * Who is standing out, at both altitudes.
+ *
+ * Both RPCs are tallies over bands that already exist — `engineer_profiles` for
+ * people, `squad_scorecards` for squads — so the guardrails (within-level cohorts,
+ * sample and cohort minimums, materiality gates) are inherited rather than
+ * re-implemented, and a caller cannot get a ranking that bypasses them.
+ */
+export function getEngineerOutliers(range: DateRange, squadId?: string) {
+  return rpcRows<EngineerOutlier>('engineer_outliers', {
+    ...rangeArgs(range),
+    p_squad_id: squadId ?? null,
+  })
+}
+
+export function getSquadOutliers(range: DateRange) {
+  return rpcRows<SquadOutlier>('squad_outliers', rangeArgs(range))
 }
 
 export function getKnowledgeConcentration(range: DateRange) {

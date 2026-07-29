@@ -191,7 +191,7 @@ export default async function PersonPage({
         <section>
           <SectionHeading
             title="Profile"
-            hint="Bands compare against others at the same seniority level, and are suppressed when the sample is too small. There is no composite score by design."
+            hint="Bands compare against others at the same seniority level, and are suppressed when the sample is too small. The composite score built from these dimensions, and this person's rank against their cohort, are on the Outliers page."
           />
           <IndividualProfile profile={profile} />
         </section>

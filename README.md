@@ -19,6 +19,7 @@ page render is a handful of RPC calls rather than a fan-out of row fetches.
 | **Delivery** | DORA with each definition stated inline, plus where merge requests actually lose time. |
 | **Sprints** | Committed vs added mid-sprint vs completed, carryover, and scope creep. |
 | **People** | Per-engineer activity, benchmarked against the median for their own level rather than the whole org. |
+| **Outliers** | Top and bottom, scored and ranked: engineers 0-100 against their own seniority cohort, squads 0-100 against absolute targets. Every sub-score and input is on the row, and thin samples are flagged rather than quietly ranked. |
 | **Admin** | Connection status, squad/board/repo mappings, unmapped identities, sync history. |
 
 ### On individual metrics
@@ -28,6 +29,15 @@ heavily on what someone is assigned, and time spent reviewing, mentoring, on
 incidents and on design does not show up in a merge-request count. Seniority
 benchmarks deliberately hide any level with fewer than two people so no
 individual is singled out by a median.
+
+Outliers does score and rank individuals, which those pages deliberately do not.
+The score is cohort-relative — 50 is the median for the engineer's own level, and
+15 points is one interquartile range of that cohort's spread — so a tight ranking
+means people are doing similar work, not that one of them is failing. Each row
+carries the materiality tally beside its score to say whether the gap behind its
+rank is real, and a confidence flag when it rests on too little. `Impact`
+contributes nothing, because there is no telemetry for it. Full rubric and the
+limits in [docs/measurement-framework.md](docs/measurement-framework.md#scoring-and-ranking).
 
 ---
 

@@ -169,3 +169,144 @@ export const SHAPE_MEANING: Record<Shape, string> = {
   'No cohort':
     'Fewer than three peers at this level, so there is no median to compare against — a shape here would only be measuring them against themselves.',
 }
+
+
+// --- scores and rankings (0021_outliers.sql) ---------------------------------
+
+/**
+ * How much weight the score can carry. The number is always produced; this says
+ * whether to act on it.
+ *
+ *  - `high`      enough work in the window, and a cohort big enough to have a median
+ *  - `thin`      too little work behind it, or a squad of one where a per-engineer
+ *                rate is really one person's rate
+ *  - `no_cohort` fewer than three peers at the level, so the median is nearly the
+ *                person themselves
+ */
+export type ScoreConfidence = 'high' | 'thin' | 'no_cohort'
+
+/** Whether the score's gap from the cohort is large enough to be worth saying. */
+export type Standing = 'top' | 'bottom' | 'typical' | 'unread'
+
+export interface EngineerOutlier {
+  engineer_id: string
+  full_name: string
+  job_title: string | null
+  seniority_key: string
+  seniority_label: string | null
+  peers_at_level: number
+  squad_id: string | null
+  squad_key: string | null
+  squad_name: string | null
+  /** 0-100 against their own seniority cohort. 50 is the cohort median. */
+  score: number | null
+  rank_in_org: number
+  rank_at_level: number
+  score_confidence: ScoreConfidence
+  confidence_reason: string | null
+  throughput_score: number | null
+  flow_score: number | null
+  quality_score: number | null
+  collaboration_score: number | null
+  /**
+   * The materiality tally from 0018, carried alongside the score as the check on
+   * its precision: two scores a point apart are the same score, and a `typical`
+   * standing on both rows is what says so.
+   */
+  signals_above: number
+  signals_below: number
+  signals_read: number
+  net: number
+  standing: Standing
+  flow_band: Band
+  quality_band: Band
+  collaboration_band: Band
+  shape: Shape
+  merged_mrs: number
+  issues_resolved: number
+  reviews_given: number
+  distinct_authors_reviewed: number
+  median_cycle_hours: number | null
+  review_coverage_received_pct: number | null
+  large_mr_pct: number | null
+  reverts_authored: number
+  last_active_at: string | null
+}
+
+export interface SquadOutlier {
+  squad_id: string
+  squad_key: string
+  squad_name: string
+  colour: string
+  headcount: number
+  /** 0-100 against absolute targets, not against the other squads. */
+  score: number | null
+  rank_in_org: number
+  score_confidence: ScoreConfidence
+  confidence_reason: string | null
+  throughput_score: number | null
+  flow_score: number | null
+  quality_score: number | null
+  collaboration_score: number | null
+  mrs_per_engineer_week: number | null
+  deploys_per_week: number | null
+  median_cycle_hours: number | null
+  change_failure_pct: number | null
+  mttr_hours: number | null
+  review_coverage_pct: number | null
+  reviews_per_engineer_week: number | null
+  cycle_sample: number
+  deploy_sample: number
+  mttr_sample: number
+}
+
+/**
+ * The squad rubric, mirrored from `0021_outliers.sql` so the UI can show what each
+ * number was scored against. Six of these thresholds are the team targets above;
+ * `mrs_per_engineer_week` and `reviews_per_engineer_week` are set from this org's
+ * own spread and are the two most arguable numbers in the scoring.
+ */
+export const SQUAD_SCORE_RUBRIC = {
+  throughput: {
+    label: 'Throughput',
+    metrics: [
+      { key: 'mrs_per_engineer_week', label: 'MRs per engineer per week', good: 4, bad: 1, weight: 2 },
+      { key: 'deploys_per_week', label: 'Production releases per week', good: 5, bad: 1, weight: 1 },
+    ],
+  },
+  flow: {
+    label: 'Flow',
+    metrics: [{ key: 'median_cycle_hours', label: 'Cycle time (median)', good: 24, bad: 120, weight: 1 }],
+  },
+  quality: {
+    label: 'Quality',
+    metrics: [
+      { key: 'change_failure_pct', label: 'Change failure rate', good: 15, bad: 30, weight: 1 },
+      { key: 'mttr_hours', label: 'Time to restore', good: 4, bad: 24, weight: 1 },
+    ],
+  },
+  collaboration: {
+    label: 'Collaboration',
+    metrics: [
+      { key: 'review_coverage_pct', label: 'Review coverage', good: 90, bad: 60, weight: 1 },
+      { key: 'reviews_per_engineer_week', label: 'Reviews per engineer per week', good: 8, bad: 2, weight: 1 },
+    ],
+  },
+} as const
+
+/** What each engineer dimension is built from, for the same reason. */
+export const ENGINEER_SCORE_RUBRIC = {
+  throughput: 'Merged merge requests (×2) and resolved issues (×1), against the level median',
+  flow: 'Median cycle time, against the level median',
+  quality: 'Review coverage received (×2), large-MR share (×1) and reverts authored (×1)',
+  collaboration: 'Reviews given (×2) and colleagues reviewed for (×1)',
+} as const
+
+/** Colour a 0-100 score. Deliberately wide in the middle: 50 is the median, not a fail. */
+export function scoreTone(score: number | null | undefined): 'good' | 'warn' | 'bad' | 'neutral' {
+  if (score === null || score === undefined) return 'neutral'
+  if (score >= 65) return 'good'
+  if (score < 35) return 'bad'
+  if (score < 45) return 'warn'
+  return 'neutral'
+}
