@@ -91,11 +91,11 @@ Three things catch people out on the first deploy:
   ~300-second budget and resumes from its cursors, so a 12-month first pass would
   take many days at one run per day. Drive the backfill from the admin page instead
   and let the cron keep it current afterwards.
-- **`main` started as an empty root commit**, created only to give the first pull
-  request a base. Vercel builds the production branch, so until the feature branch
-  is merged, production has nothing in it. Either merge to `main` first, or point
-  **Settings → Git → Production Branch** at the branch that has the code. Branch
-  pushes still get preview deployments either way.
+- **Production only ever builds `main`.** Vercel builds the production branch, so
+  unmerged code isn't live however green its preview is — merge to `main` to deploy.
+  Don't shortcut that by pointing **Settings → Git → Production Branch** at a
+  feature branch; production ends up tracking a branch that later gets deleted.
+  Branch pushes still get preview deployments.
 
 Set the environment variables for Preview as well as Production if you want branch
 deployments to work — a preview build with no `NEXT_PUBLIC_SUPABASE_URL` compiles
