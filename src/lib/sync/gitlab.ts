@@ -14,6 +14,7 @@ import {
   resolveMrSize,
   type CommitSizeSource,
 } from '@/lib/sync/change-size'
+import { shapeOfChange } from '@/lib/sync/file-classes'
 import { IdentityResolver } from '@/lib/sync/identity'
 import { isProductionEnvironment } from '@/lib/sync/matching'
 import {
@@ -76,6 +77,7 @@ export async function syncGitLab(
      * so the price of the measurement is visible next to the measurement.
      */
     mrs_sized: 0,
+    mrs_with_paths: 0,
     commit_stat_calls: 0,
     sizes_backfilled: 0,
     mrs_resized_from_commits: 0,
@@ -124,6 +126,7 @@ export async function syncGitLab(
       stats.deployments += counts.deployments
       stats.pipelines += counts.pipelines
       stats.mrs_sized += counts.mrsSized
+      stats.mrs_with_paths += counts.mrsWithPaths
       stats.commit_stat_calls += counts.commitStatCalls
       if (counts.completed) stats.projects_completed += 1
       else stats.ran_out_of_time = 1
@@ -428,6 +431,8 @@ async function syncProject(
     mrsSized: 0,
     /** Extra API calls spent obtaining commit line counts. */
     commitStatCalls: 0,
+    /** Merge requests whose file paths were obtained, so authored churn is known. */
+    mrsWithPaths: 0,
   }
 
   const mrCursorKey = `project:${project.gitlab_id}:merge_requests`
@@ -548,12 +553,27 @@ async function syncProject(
       }
     }
 
-    const size = resolveMrSize({
-      diffStats: mr.diff_stats,
-      changesCount: mr.changes_count,
-      commits,
-    })
+    // GraphQL first: it is the only source that carries file paths, which is what
+    // lets a lockfile bump stop counting as five thousand lines of work. One call,
+    // no diff bodies. Falls back to the commit sums above when it answers nothing.
+    const graphql = await client.mergeRequestDiffStats(project.path_with_namespace, mr.iid)
+    const shape = graphql ? shapeOfChange(graphql.files) : null
+
+    const size = graphql?.summary
+      ? {
+          additions: graphql.summary.additions,
+          deletions: graphql.summary.deletions,
+          changedFiles: graphql.summary.fileCount,
+          source: 'graphql_diff_stats' as const,
+          churnKnown: true,
+        }
+      : resolveMrSize({
+          diffStats: mr.diff_stats,
+          changesCount: mr.changes_count,
+          commits,
+        })
     if (size.churnKnown) counts.mrsSized += 1
+    if (shape) counts.mrsWithPaths += 1
 
     const approvals = await client.mergeRequestApprovals(project.gitlab_id, mr.iid)
 
@@ -586,6 +606,14 @@ async function syncProject(
           // read churn as NULL unless the source says a line count was obtained.
           size_source: size.source,
           size_measured_at: new Date().toISOString(),
+          // Only set where paths were available. Left null otherwise, so the view
+          // knows to fall back to total churn rather than assuming nothing was
+          // generated.
+          churn_authored: shape?.churnAuthored ?? null,
+          files_authored: shape?.filesAuthored ?? null,
+          modules_touched: shape?.modules ?? null,
+          generated_pct: shape?.generatedPct ?? null,
+          test_ratio: shape?.testRatio ?? null,
           commits_count: commits.length,
           approvals_count: approvals?.approved_by?.length ?? 0,
           labels: mr.labels ?? [],

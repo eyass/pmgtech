@@ -112,6 +112,8 @@ points = log₂(1 + churn ÷ median churn) × breadth,  capped at 6, floored at 
 | Sublinear — 63× the lines is 6× the weight | Rewarding churn linearly would move the gaming from many-small to one-enormous, which is worse: large changes are harder to review. |
 | Capped at 6 | One vendored-dependency dump or generated-file commit cannot outscore a quarter of someone's real work. |
 | Floored at 0.1 for ≤10 lines in a single file | The teeth. Twenty of those are worth two median merge requests, not twenty. |
+| Counts **authored** churn — generated files excluded | A `package-lock.json` bump is 5,000 lines and no engineering. Measured: it scores **0.12** on authored churn against **5.61** on total churn, so without this the cheapest way to a top score would be bumping dependencies. Needs file paths, which GraphQL `diffStats` supplies without the diff bodies REST bundles in. |
+| Breadth counted by directory, not file | Thirty files in one directory is one change; the file count was flattering it. |
 | Breadth multiplier, up to 1.5× | Coordinating a change across thirty files is work a line count alone misses. |
 
 Counter-metric, per the rule above: throughput now rewards size, and **quality already penalises
