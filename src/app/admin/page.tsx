@@ -81,9 +81,18 @@ export default async function AdminPage() {
   // Nothing gets assigned or linked to an ignored row — the result would be invisible
   // everywhere it matters — so the pickers only offer live ones.
   const squadOptions = squads.filter((s) => !s.is_ignored).map((s) => ({ id: s.id, name: s.name }))
+  // Leavers and people added by hand are the point of the identity pickers rather than
+  // an edge case: an unmapped GitLab account usually belongs to someone who has already
+  // left, and "Add an engineer" defaults to Former employee precisely so their old work
+  // can be attributed. Filtering the pickers to active people made those two features
+  // cancel each other out. Ignored rows stay out — attributing work to one hides it.
   const engineerOptions = engineers
-    .filter((e) => e.is_active && !e.is_ignored)
-    .map((e) => ({ id: e.id, name: `${e.display_name ?? e.full_name}${e.email ? ` (${e.email})` : ''}` }))
+    .filter((e) => !e.is_ignored)
+    .map((e) => ({
+      id: e.id,
+      name: `${e.display_name ?? e.full_name}${e.email ? ` (${e.email})` : ''}`,
+      former: !e.is_active,
+    }))
   const membersBySquad = new Map<string, number>()
   for (const engineer of engineers) {
     if (!engineer.squad_id) continue

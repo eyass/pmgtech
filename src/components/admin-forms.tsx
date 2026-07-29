@@ -143,6 +143,38 @@ export function ToggleButton({
   )
 }
 
+export type EngineerOption = { id: string; name: string; former?: boolean }
+
+/**
+ * The engineer list for an identity picker.
+ *
+ * Leavers and hand-added people are offered, because they are usually the answer: an
+ * account nobody has mapped yet tends to belong to someone who has already gone, and
+ * their merge requests are still inside the reporting window. A current employee is
+ * still the more common pick, so they come first and the rest are grouped under a
+ * label rather than mixed in unannounced.
+ */
+function EngineerOptions({ engineers }: { engineers: EngineerOption[] }) {
+  const current = engineers.filter((e) => !e.former)
+  const former = engineers.filter((e) => e.former)
+  const options = (list: EngineerOption[]) =>
+    list.map((engineer) => (
+      <option key={engineer.id} value={engineer.id}>
+        {engineer.name}
+      </option>
+    ))
+
+  // With nothing to separate, an optgroup is just a heading over the whole list.
+  if (current.length === 0 || former.length === 0) return <>{options(engineers)}</>
+
+  return (
+    <>
+      <optgroup label="Currently employed">{options(current)}</optgroup>
+      <optgroup label="Former or added by hand">{options(former)}</optgroup>
+    </>
+  )
+}
+
 export function LinkIdentityForm({
   action,
   identityId,
@@ -150,7 +182,7 @@ export function LinkIdentityForm({
 }: {
   action: Action
   identityId: string
-  engineers: { id: string; name: string }[]
+  engineers: EngineerOption[]
 }) {
   const [result, formAction] = useAction(action)
 
@@ -164,11 +196,7 @@ export function LinkIdentityForm({
         className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs"
       >
         <option value="">Choose engineer…</option>
-        {engineers.map((engineer) => (
-          <option key={engineer.id} value={engineer.id}>
-            {engineer.name}
-          </option>
-        ))}
+        <EngineerOptions engineers={engineers} />
       </select>
       <SubmitButton label="Link" />
       <Status result={result} />
@@ -194,7 +222,7 @@ export function LinkBridgeForm({
   provider: string
   externalId: string
   handle: string
-  engineers: { id: string; name: string }[]
+  engineers: EngineerOption[]
 }) {
   const [result, formAction] = useAction(action)
 
@@ -210,11 +238,7 @@ export function LinkBridgeForm({
         className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs"
       >
         <option value="">Choose engineer…</option>
-        {engineers.map((engineer) => (
-          <option key={engineer.id} value={engineer.id}>
-            {engineer.name}
-          </option>
-        ))}
+        <EngineerOptions engineers={engineers} />
       </select>
       <SubmitButton label="Link" />
       <Status result={result} />
