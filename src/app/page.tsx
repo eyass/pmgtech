@@ -2,6 +2,7 @@ import Link from 'next/link'
 
 import { SquadBarChart, TrendChart } from '@/components/charts'
 import { AttributionBanner, SyncAlertBanner } from '@/components/coverage'
+import { SquadComparison } from '@/components/sections/squad-comparison'
 import { SetupNotice } from '@/components/setup-notice'
 import { Bar, Card, Kpi, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { integrationStatus } from '@/lib/env'
@@ -64,6 +65,11 @@ export default async function OverviewPage({
         <SectionHeading
           title="Delivery health"
           hint="The four DORA metrics plus review throughput, for the whole engineering org."
+          action={
+            <Link href="/performance" className="text-sm text-[var(--color-muted)] hover:underline">
+              How we measure →
+            </Link>
+          }
         />
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Kpi
@@ -162,85 +168,8 @@ export default async function OverviewPage({
         <SectionHeading
           title="Squads"
           hint="Work is attributed to the squad of the person who did it. The repository fallback does nothing here — this org has one monorepo that several squads share — so an unassigned engineer's work reaches no squad at all."
-          action={
-            <Link href="/squads" className="text-sm text-[var(--color-muted)] hover:underline">
-              Compare in detail →
-            </Link>
-          }
         />
-
-        <AttributionBanner kpis={kpis} />
-
-        <Table
-          empty="No squad activity in this period."
-          head={
-            <>
-              <Th>Squad</Th>
-              <Th align="right">People</Th>
-              <Th align="right" title="Merged merge requests in the selected period">
-                Merged
-              </Th>
-              <Th align="right" title="Merged MRs per engineer per week">
-                Per eng/wk
-              </Th>
-              <Th align="right" title="Median first commit to merge">
-                Lead time
-              </Th>
-              <Th align="right" title="Median time from MR open to first review">
-                Review wait
-              </Th>
-              <Th align="right" title="Successful production deployments per week">
-                Deploys/wk
-              </Th>
-              <Th align="right">Issues</Th>
-            </>
-          }
-        >
-          {squads.map((squad) => {
-            const maxMerged = Math.max(...squads.map((s) => s.merged_mrs), 1)
-            return (
-              <tr key={squad.squad_id}>
-                <Td>
-                  <SquadBadge
-                    squadKey={squad.squad_key}
-                    name={squad.squad_name}
-                    href={`/squads/${squad.squad_key}?period=${key}`}
-                  />
-                </Td>
-                <Td align="right" numeric>
-                  {squad.headcount === 0 ? (
-                    <Pill tone="warn">none mapped</Pill>
-                  ) : (
-                    nf(squad.headcount)
-                  )}
-                </Td>
-                <Td align="right" numeric>
-                  <div className="flex flex-col items-end gap-1">
-                    <span>{nf(squad.merged_mrs)}</span>
-                    <div className="w-16">
-                      <Bar value={squad.merged_mrs} max={maxMerged} colour={squad.colour} />
-                    </div>
-                  </div>
-                </Td>
-                <Td align="right" numeric>
-                  {nf(squad.mrs_per_engineer_week, 2)}
-                </Td>
-                <Td align="right" numeric>
-                  {hours(squad.median_cycle_hours)}
-                </Td>
-                <Td align="right" numeric>
-                  {hours(squad.median_review_wait_hours)}
-                </Td>
-                <Td align="right" numeric>
-                  {nf(squad.deploys_per_week, 1)}
-                </Td>
-                <Td align="right" numeric>
-                  {nf(squad.issues_resolved)}
-                </Td>
-              </tr>
-            )
-          })}
-        </Table>
+        <SquadComparison period={key} squads={squads} trend={trend} kpis={kpis} />
       </section>
 
       {/* --- trends ----------------------------------------------------------- */}

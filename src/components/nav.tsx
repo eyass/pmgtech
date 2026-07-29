@@ -5,14 +5,20 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 
 import { PERIODS, type PeriodKey } from '@/lib/queries'
 
+/**
+ * Five entries, down from eight.
+ *
+ * Three pages were folded into the one they were a view of, rather than deleted —
+ * squad comparison into the overview it sits below, sprints into the delivery
+ * metrics they are part of, and the measurement framework into a reference linked
+ * from the pages that cite it instead of a top-level destination. All three routes
+ * still resolve, so bookmarks and older links keep working.
+ */
 const LINKS = [
   { href: '/', label: 'Overview' },
-  { href: '/squads', label: 'Squads' },
   { href: '/delivery', label: 'Delivery' },
-  { href: '/sprints', label: 'Sprints' },
   { href: '/people', label: 'People' },
   { href: '/outliers', label: 'Outliers' },
-  { href: '/performance', label: 'Framework' },
   { href: '/admin', label: 'Admin' },
 ]
 

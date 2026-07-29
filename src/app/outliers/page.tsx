@@ -324,7 +324,11 @@ export default async function OutliersPage({
         </Card>
         <MetricNote>
           These tracks are the one thing on this page that is <strong>not</strong> relative. Squads
-          are scored against the delivery targets on the framework page, so the full 0-100 run is
+          are scored against the delivery targets on the{' '}
+          <Link href="/performance" className="underline">
+            measurement framework
+          </Link>{' '}
+          page, so the full 0-100 run is
           drawn every time: 0 is the bad threshold, 100 is the good one, and the tick is genuinely
           halfway between them rather than the median of the other squads. That is deliberate — a
           strong org should not manufacture a loser, and a good squad should lose nothing to good
