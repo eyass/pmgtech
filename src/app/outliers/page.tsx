@@ -11,6 +11,8 @@ import {
   resolvePeriod,
 } from '@/lib/queries'
 import {
+  COMPLEXITY_COVERAGE_FLOOR,
+  COMPLEXITY_RUBRIC,
   ENGINEER_SCORE_RUBRIC,
   scoreTone,
   SQUAD_SCORE_RUBRIC,
@@ -116,6 +118,10 @@ export default async function OutliersPage({
         />
       </div>
 
+      {/* --- what throughput is counting in ----------------------------------- */}
+
+      <ComplexityBanner rows={engineers} />
+
       {/* --- how the score works ---------------------------------------------- */}
 
       <Card>
@@ -208,8 +214,13 @@ export default async function OutliersPage({
               <SubScore
                 score={squad.throughput_score}
                 lines={[
-                  `${nf(squad.mrs_per_engineer_week, 2)} MRs/eng/wk`,
+                  squad.throughput_basis === 'complexity'
+                    ? `${nf(squad.effective_mrs_per_engineer_week, 2)} weighted MRs/eng/wk`
+                    : `${nf(squad.mrs_per_engineer_week, 2)} MRs/eng/wk`,
                   `${nf(squad.deploys_per_week, 2)} releases/wk`,
+                  ...(squad.throughput_basis === 'complexity' && squad.points_per_mr !== null
+                    ? [`${nf(squad.points_per_mr, 2)} per MR`]
+                    : []),
                 ]}
               />
               <SubScore score={squad.flow_score} lines={[`${hours(squad.median_cycle_hours)} cycle`]} />
@@ -286,6 +297,61 @@ export default async function OutliersPage({
   )
 }
 
+/**
+ * What the throughput dimension is actually counting, and why.
+ *
+ * This is on the page rather than in the docs because the answer changes by itself:
+ * throughput counts complexity-weighted merge requests once enough of them have a
+ * measured size, and raw merge requests until then. A reader comparing two periods
+ * needs to know which unit they are looking at, and someone reading it the week the
+ * backfill is still running needs to know the weighting is not live yet.
+ */
+function ComplexityBanner({ rows }: { rows: EngineerOutlier[] }) {
+  const first = rows[0]
+  if (!first) return null
+  const weighted = first.throughput_basis === 'complexity'
+  const coverage = first.org_sized_mr_pct ?? 0
+
+  return (
+    <Card
+      className={
+        weighted
+          ? undefined
+          : 'border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30'
+      }
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">
+          Throughput counts {weighted ? 'complexity-weighted merge requests' : 'merge requests'}
+        </h2>
+        <Pill tone={weighted ? 'good' : 'warn'}>{pct(coverage, 1)} of MRs measured</Pill>
+      </div>
+      {weighted ? (
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--color-muted)]">
+          A merge request is worth <strong>{COMPLEXITY_RUBRIC.unit.toLowerCase()}</strong>:{' '}
+          <code className="rounded bg-[var(--color-line)] px-1 py-0.5 text-xs">
+            {COMPLEXITY_RUBRIC.formula}
+          </code>
+          . {COMPLEXITY_RUBRIC.trivialFloor}, so twenty of those are worth two median ones rather
+          than twenty. {COMPLEXITY_RUBRIC.cap}, because rewarding lines linearly would just move
+          the gaming from many-small to one-enormous — and large changes are harder to review.
+        </p>
+      ) : (
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed">
+          <strong>The weighting is not live yet.</strong> Merge-request sizes were never collected
+          — the sync read a GitLab field that does not exist and stored zero for all 2,000 merge
+          requests — so only {pct(coverage, 1)} of this period&apos;s work has a measured size,
+          below the {COMPLEXITY_COVERAGE_FLOOR}% needed. Throughput therefore still counts merge
+          requests, exactly as it did before, and switches to weighted units on its own once the
+          sync&apos;s size backfill has worked through history. Mixing the two units inside one
+          cohort would make its median meaningless, so the basis is chosen once for everybody.
+        </p>
+      )}
+      <MetricNote>{COMPLEXITY_RUBRIC.blindSpot}</MetricNote>
+    </Card>
+  )
+}
+
 function HeadlineCard({
   label,
   name,
@@ -349,6 +415,52 @@ function SubScore({ score, lines }: { score: number | null; lines: string[] }) {
   )
 }
 
+/**
+ * Weighted merge requests against the raw count — the cell where splitting work into
+ * tiny pieces becomes visible. A ratio near 1.0 means their changes are about the
+ * org's median size; 0.1 means they are at the trivial floor.
+ */
+function ComplexityCell({ engineer }: { engineer: EngineerOutlier }) {
+  if (engineer.effective_mrs === null) {
+    return (
+      <Td align="right" numeric>
+        <span className="text-[var(--color-muted)]" title="No merge request of theirs has a measured size yet">
+          not measured
+        </span>
+        <div className="text-[11px] text-[var(--color-muted)]">{nf(engineer.merged_mrs)} MRs</div>
+      </Td>
+    )
+  }
+  const ratio = engineer.points_per_mr
+  // Amber below half a median MR: not a verdict, but the number to ask about.
+  const tone =
+    ratio !== null && ratio < 0.5
+      ? 'text-amber-600 dark:text-amber-400'
+      : ratio !== null && ratio >= 1.5
+        ? 'text-emerald-600 dark:text-emerald-400'
+        : ''
+  return (
+    <Td align="right" numeric>
+      <span className={`font-medium ${tone}`}>{nf(engineer.effective_mrs, 1)}</span>
+      <div className="text-[11px] text-[var(--color-muted)]">
+        <div>
+          {nf(ratio, 2)} / MR · {nf(engineer.median_churn)} lines
+        </div>
+        {engineer.trivial_mr_pct !== null && engineer.trivial_mr_pct > 0 ? (
+          <div title="Merge requests of 10 lines or fewer touching a single file">
+            {pct(engineer.trivial_mr_pct, 0)} trivial
+          </div>
+        ) : null}
+        {engineer.sized_mr_pct !== null && engineer.sized_mr_pct < 100 ? (
+          <div title="The rest have no measured size yet, so this total is an understatement">
+            {pct(engineer.sized_mr_pct, 0)} measured
+          </div>
+        ) : null}
+      </div>
+    </Td>
+  )
+}
+
 function ConfidencePill({ confidence }: { confidence: ScoreConfidence }) {
   if (confidence === 'high') return <Pill tone="good">solid</Pill>
   if (confidence === 'thin') return <Pill tone="warn">thin data</Pill>
@@ -381,6 +493,9 @@ function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
             Gap
           </Th>
           <Th align="right">Throughput</Th>
+          <Th align="right" title="Merge requests weighted by how much each one contained, in units of the org's median merged MR. Well below the raw count means their changes are small.">
+            Weighted MRs
+          </Th>
           <Th align="right">Flow</Th>
           <Th align="right">Quality</Th>
           <Th align="right">Collaboration</Th>
@@ -417,6 +532,7 @@ function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
             score={engineer.throughput_score}
             lines={[`${nf(engineer.merged_mrs)} MRs`, `${nf(engineer.issues_resolved)} issues`]}
           />
+          <ComplexityCell engineer={engineer} />
           <SubScore
             score={engineer.flow_score}
             lines={[hours(engineer.median_cycle_hours)]}

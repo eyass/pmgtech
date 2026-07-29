@@ -86,7 +86,7 @@ Dimension inputs, and the within-dimension weights:
 
 | Dimension | Engineers | Squads |
 | --- | --- | --- |
-| Throughput | Merged MRs ×2, resolved issues ×1 | MRs per engineer per week ×2 (good 4, bad 1), production releases per week ×1 (good 5, bad 1) |
+| Throughput | Complexity-weighted MRs ×2, resolved issues ×1 | Weighted MRs per engineer per week ×2 (good 4, bad 1), production releases per week ×1 (good 5, bad 1) |
 | Flow | Median cycle time | Median cycle time (good 24h, bad 120h) |
 | Quality | Review coverage received ×2, large-MR share ×1, reverts ×1 | Change failure rate (good 15%, bad 30%), time to restore (good 4h, bad 24h) |
 | Collaboration | Reviews given ×2, colleagues reviewed for ×1 | Review coverage (good 90%, bad 60%), reviews per engineer per week (good 8, bad 2) |
@@ -95,6 +95,42 @@ Six of the squad thresholds are the team targets already used on `/performance`.
 per-engineer rates are new, and were set from this org's own spread rather than from anything
 published — they are the most arguable numbers in the scoring and they live in exactly one place,
 `0021_outliers.sql`.
+
+### Complexity weighting: why a merge request is not one unit
+
+Counting merge requests makes a three-line change and a nine-hundred-line refactor worth the same,
+which is gameable in one obvious direction — split the work, ship more units, score higher. So the
+throughput dimension counts **weighted** merge requests (`0022`, `0023`):
+
+```
+points = log₂(1 + churn ÷ median churn) × breadth,  capped at 6, floored at 0.1
+```
+
+| Property | Why it is that shape |
+| --- | --- |
+| The unit is the org's own median merged MR for the period | Self-calibrating. A team whose normal change is 40 lines and one whose normal change is 400 each get a scale that fits, and no line count is invented here. A median MR scores 1.0. |
+| Sublinear — 63× the lines is 6× the weight | Rewarding churn linearly would move the gaming from many-small to one-enormous, which is worse: large changes are harder to review. |
+| Capped at 6 | One vendored-dependency dump or generated-file commit cannot outscore a quarter of someone's real work. |
+| Floored at 0.1 for ≤10 lines in a single file | The teeth. Twenty of those are worth two median merge requests, not twenty. |
+| Breadth multiplier, up to 1.5× | Coordinating a change across thirty files is work a line count alone misses. |
+
+Counter-metric, per the rule above: throughput now rewards size, and **quality already penalises
+it** — `large_mr_pct`, review coverage received and review iterations all degrade as merge requests
+grow. Pushing one moves the other.
+
+Three limits worth knowing before quoting a weighted number:
+
+- **It is size, not cognitive complexity.** Nothing parses source, so nesting, coupling and
+  cleverness are invisible. A change that took three days to find and one line to fix scores 0.1,
+  exactly like a typo fix, and no telemetry here can tell them apart. The raw count sits next to the
+  weighted one for that reason.
+- **Resolved issues are still a plain count.** Jira has no comparable size signal — story points
+  cover under 10% of issues here — so that half of the throughput dimension remains
+  splittable. It is the remaining gaming surface, and it is deliberate rather than overlooked.
+- **The basis is chosen once, org-wide.** Below 60% of merged MRs having a measured size, throughput
+  falls back to counting them, for everyone, and `throughput_basis` says so on every row. Mixing
+  weighted and unweighted rows inside one seniority cohort would put two units in the same
+  percentile and the median would mean nothing.
 
 ### What the score still will not do
 

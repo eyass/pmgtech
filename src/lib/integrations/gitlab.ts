@@ -72,7 +72,12 @@ export interface GitLabCommit {
   authored_date: string
   committed_date: string
   parent_ids: string[]
-  stats?: { additions: number; deletions: number; total: number }
+  /**
+   * Only present when something asked for it — `with_stats` on a listing, or the
+   * single-commit endpoint. `total` is not always echoed back, so it is optional:
+   * callers add the two halves rather than trusting a field GitLab may omit.
+   */
+  stats?: { additions: number; deletions: number; total?: number }
 }
 
 export interface GitLabApproval {
@@ -244,12 +249,48 @@ export class GitLabClient {
     )
   }
 
+  /**
+   * Commits on a merge request.
+   *
+   * `with_stats` is requested because it costs nothing to ask: where the instance
+   * honours it, every commit arrives with its line counts and no follow-up call is
+   * needed. GitLab ignores query parameters it does not recognise, so this is safe
+   * on versions that do not support it — and `commitStats` below is the fallback
+   * for exactly that case. The stats are not assumed present anywhere; callers
+   * check, because assuming they were there is what produced 9,893 commits with a
+   * size of zero.
+   */
   async mergeRequestCommits(projectId: number, iid: number): Promise<GitLabCommit[]> {
     return this.getAll<GitLabCommit>(
       `/projects/${projectId}/merge_requests/${iid}/commits`,
-      {},
+      { with_stats: 'true' },
       5,
     )
+  }
+
+  /**
+   * One commit, with its line counts. The single-commit endpoint documents `stats`,
+   * which is why this is the fallback of record rather than something cleverer: it
+   * costs a call per commit, but it is the only source here that is certain.
+   *
+   * A missing or inaccessible commit returns null rather than throwing — a force-push
+   * can leave a merge request referencing a sha that no longer resolves, and one dead
+   * sha must not end a sync slice.
+   */
+  async commitStats(
+    projectId: number,
+    sha: string,
+  ): Promise<{ additions: number; deletions: number } | null> {
+    try {
+      const { data } = await this.get<GitLabCommit>(
+        `/projects/${projectId}/repository/commits/${encodeURIComponent(sha)}`,
+      )
+      if (!data.stats) return null
+      return { additions: data.stats.additions ?? 0, deletions: data.stats.deletions ?? 0 }
+    } catch (error) {
+      if (error instanceof IntegrationError && [403, 404].includes(error.status)) return null
+      throw error
+    }
   }
 
   /**

@@ -188,6 +188,14 @@ export type ScoreConfidence = 'high' | 'thin' | 'no_cohort'
 /** Whether the score's gap from the cohort is large enough to be worth saying. */
 export type Standing = 'top' | 'bottom' | 'typical' | 'unread'
 
+/**
+ * Which unit the throughput dimension counted in. Chosen once org-wide (see
+ * `0023_complexity_weighted_throughput.sql`): `complexity` means merge requests were
+ * weighted by how much they contained, `count` means they were counted raw because
+ * too little of the work has a measured size yet.
+ */
+export type ThroughputBasis = 'complexity' | 'count'
+
 export interface EngineerOutlier {
   engineer_id: string
   full_name: string
@@ -231,6 +239,21 @@ export interface EngineerOutlier {
   large_mr_pct: number | null
   reverts_authored: number
   last_active_at: string | null
+  /**
+   * Complexity-weighted merge requests, in units of "median merged MR for the
+   * period". Null until sizes have been measured. Compare against `merged_mrs`: far
+   * below it means their changes are smaller than the org's typical one.
+   */
+  effective_mrs: number | null
+  points_per_mr: number | null
+  median_churn: number | null
+  /** Share of their merge requests at the trivial floor — 10 lines or fewer, one file. */
+  trivial_mr_pct: number | null
+  /** How much of *their* work has a measured size. Low means effective_mrs understates. */
+  sized_mr_pct: number | null
+  /** How much of the *org's* work has one. This is what picks the basis. */
+  org_sized_mr_pct: number | null
+  throughput_basis: ThroughputBasis
 }
 
 export interface SquadOutlier {
@@ -258,6 +281,14 @@ export interface SquadOutlier {
   cycle_sample: number
   deploy_sample: number
   mttr_sample: number
+  effective_mrs: number | null
+  /** The weighted rate scored against the same 4/1 target as the raw one. */
+  effective_mrs_per_engineer_week: number | null
+  points_per_mr: number | null
+  median_churn: number | null
+  trivial_mr_pct: number | null
+  sized_mr_pct: number | null
+  throughput_basis: ThroughputBasis
 }
 
 /**
@@ -296,7 +327,8 @@ export const SQUAD_SCORE_RUBRIC = {
 
 /** What each engineer dimension is built from, for the same reason. */
 export const ENGINEER_SCORE_RUBRIC = {
-  throughput: 'Merged merge requests (×2) and resolved issues (×1), against the level median',
+  throughput:
+    'Complexity-weighted merge requests (×2) and resolved issues (×1), against the level median',
   flow: 'Median cycle time, against the level median',
   quality: 'Review coverage received (×2), large-MR share (×1) and reverts authored (×1)',
   collaboration: 'Reviews given (×2) and colleagues reviewed for (×1)',
@@ -310,3 +342,20 @@ export function scoreTone(score: number | null | undefined): 'good' | 'warn' | '
   if (score < 45) return 'warn'
   return 'neutral'
 }
+
+/**
+ * How a merge request's size becomes a weight (`0022_change_size_and_complexity.sql`),
+ * mirrored here so the UI can explain a number rather than just show it.
+ */
+export const COMPLEXITY_RUBRIC = {
+  formula: 'log₂(1 + churn ÷ median churn) × breadth, capped at 6, floored at 0.1',
+  unit: 'One point is the org’s median merged merge request for the period',
+  trivialFloor: '10 lines or fewer in a single file scores 0.1 — a twentieth of a median MR',
+  cap: 'Capped at 6 so one vendored-dependency dump cannot outscore a quarter of real work',
+  breadth: 'Up to 1.5× for a change spread across many files',
+  blindSpot:
+    'Nothing here parses source, so nesting and cleverness are invisible. A hard one-line fix scores 0.1 like a typo — that case needs a human.',
+} as const
+
+/** Coverage below this and throughput falls back to counting merge requests. */
+export const COMPLEXITY_COVERAGE_FLOOR = 60
