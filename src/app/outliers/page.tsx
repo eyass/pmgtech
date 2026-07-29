@@ -1,5 +1,6 @@
 import Link from 'next/link'
 
+import { AxisSummary } from '@/components/axis-summary'
 import { BandPill, ShapePill } from '@/components/performance'
 import { Scatter, type ScatterPoint } from '@/components/scatter'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
@@ -223,8 +224,13 @@ export default async function OutliersPage({
               squad={selected?.key}
             />
           </div>
-          <div className="mt-5 md:max-w-2xl">
+          <div className="mt-5 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_15rem]">
             <Scatter
+              points={scatterPoints}
+              xLabel={DIMENSIONS[xKey].label}
+              yLabel={DIMENSIONS[yKey].label}
+            />
+            <AxisSummary
               points={scatterPoints}
               xLabel={DIMENSIONS[xKey].label}
               yLabel={DIMENSIONS[yKey].label}
