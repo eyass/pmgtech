@@ -81,18 +81,20 @@ export default async function AdminPage() {
   // Nothing gets assigned or linked to an ignored row — the result would be invisible
   // everywhere it matters — so the pickers only offer live ones.
   const squadOptions = squads.filter((s) => !s.is_ignored).map((s) => ({ id: s.id, name: s.name }))
-  // Leavers and people added by hand are the point of the identity pickers rather than
-  // an edge case: an unmapped GitLab account usually belongs to someone who has already
-  // left, and "Add an engineer" defaults to Former employee precisely so their old work
-  // can be attributed. Filtering the pickers to active people made those two features
-  // cancel each other out. Ignored rows stay out — attributing work to one hides it.
-  const engineerOptions = engineers
-    .filter((e) => !e.is_ignored)
-    .map((e) => ({
-      id: e.id,
-      name: `${e.display_name ?? e.full_name}${e.email ? ` (${e.email})` : ''}`,
-      former: !e.is_active,
-    }))
+  // Every engineer in the directory is offered, grouped by standing. Leavers and
+  // hand-added people are the point of the identity pickers rather than an edge case:
+  // an unmapped GitLab account usually belongs to someone who has already left, and
+  // "Add an engineer" defaults to Former employee precisely so their old work can be
+  // attributed. Ignored rows are offered too — they were withheld, which silently put
+  // a third of this directory out of reach with nothing on screen saying so. Linking
+  // to one does hide the work, so the picker states that in the group heading instead
+  // of removing the option.
+  const engineerOptions = engineers.map((e) => ({
+    id: e.id,
+    name: `${e.display_name ?? e.full_name}${e.email ? ` (${e.email})` : ''}`,
+    former: !e.is_active,
+    ignored: e.is_ignored,
+  }))
   const membersBySquad = new Map<string, number>()
   for (const engineer of engineers) {
     if (!engineer.squad_id) continue
@@ -344,7 +346,7 @@ export default async function AdminPage() {
       <section>
         <SectionHeading
           title="Unmapped identities"
-          hint="GitLab and Jira accounts whose email did not match anyone in HiBob. Until they are linked, their work is not attributed to a person or a squad."
+          hint={`GitLab and Jira accounts whose email did not match anyone in HiBob. Until they are linked, their work is not attributed to a person or a squad. Every engineer in the directory is offered — all ${engineers.length}, grouped by whether they are current, former, or ignored — because an unmapped account usually belongs to someone who has already left.`}
         />
         <Table
           empty="Everything is attributed — no unmapped identities."

@@ -4,6 +4,7 @@ import { useActionState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import type { ActionResult } from '@/app/admin/actions'
+import { groupEngineerOptions, shouldGroup, type EngineerOption } from '@/lib/engineer-options'
 
 /**
  * Thin client wrappers around the admin server actions.
@@ -143,20 +144,27 @@ export function ToggleButton({
   )
 }
 
-export type EngineerOption = { id: string; name: string; former?: boolean }
-
 /**
- * The engineer list for an identity picker.
+ * The engineer list for an identity picker: everybody in the directory.
  *
- * Leavers and hand-added people are offered, because they are usually the answer: an
- * account nobody has mapped yet tends to belong to someone who has already gone, and
- * their merge requests are still inside the reporting window. A current employee is
- * still the more common pick, so they come first and the rest are grouped under a
- * label rather than mixed in unannounced.
+ * Leavers and hand-added people are usually the answer rather than an edge case — an
+ * account nobody has mapped tends to belong to someone who has already gone, and
+ * their merge requests are still inside the reporting window. Current employees are
+ * the more common pick, so they come first.
+ *
+ * Two things this got wrong before, both reported from the screen:
+ *
+ * - **The counts are in the labels.** With twenty current employees above them, the
+ *   leavers were already in the list but nobody could tell: a native select gives no
+ *   hint that a second group exists further down, so the picker looked like it only
+ *   offered current staff. A count in each heading is what makes the rest findable.
+ * - **Ignored people are offered too, and say what they cost.** They were filtered
+ *   out entirely, which meant fifteen of this directory's forty-five engineers could
+ *   not be picked and nothing on the screen said so. They are the right answer often
+ *   enough to be worth offering; what matters is that choosing one has a consequence,
+ *   so the group heading carries it rather than leaving it to be discovered later.
  */
 function EngineerOptions({ engineers }: { engineers: EngineerOption[] }) {
-  const current = engineers.filter((e) => !e.former)
-  const former = engineers.filter((e) => e.former)
   const options = (list: EngineerOption[]) =>
     list.map((engineer) => (
       <option key={engineer.id} value={engineer.id}>
@@ -164,13 +172,16 @@ function EngineerOptions({ engineers }: { engineers: EngineerOption[] }) {
       </option>
     ))
 
-  // With nothing to separate, an optgroup is just a heading over the whole list.
-  if (current.length === 0 || former.length === 0) return <>{options(engineers)}</>
+  const groups = groupEngineerOptions(engineers)
+  if (!shouldGroup(groups)) return <>{options(engineers)}</>
 
   return (
     <>
-      <optgroup label="Currently employed">{options(current)}</optgroup>
-      <optgroup label="Former or added by hand">{options(former)}</optgroup>
+      {groups.map((group) => (
+        <optgroup key={group.label} label={group.label}>
+          {options(group.list)}
+        </optgroup>
+      ))}
     </>
   )
 }
@@ -373,3 +384,5 @@ function SyncButton({ label, href, title }: { label: string; href: string; title
     </a>
   )
 }
+
+export type { EngineerOption }
