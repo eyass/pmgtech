@@ -94,6 +94,115 @@ export async function toggleEngineerMetrics(formData: FormData): Promise<ActionR
   }
 }
 
+/**
+ * Take a person out of the product altogether, or put them back.
+ *
+ * Stronger than excluding from metrics, and meant for a different problem: a
+ * duplicate record, a contractor nobody tracks, an account that turned out to be
+ * machinery. Everything they authored, reviewed or was assigned stops counting
+ * anywhere rather than continuing to count towards their squad. The row itself is
+ * kept — deleting it would invite the next sync to recreate it and would take the
+ * identity mappings with it — and the flags it loses are remembered so restoring
+ * hands them back. See migration 0020.
+ */
+export async function toggleEngineerIgnored(formData: FormData): Promise<ActionResult> {
+  try {
+    await requireAdmin()
+    const engineerId = String(formData.get('engineerId') ?? '')
+    const ignored = String(formData.get('ignored') ?? '') === 'true'
+    if (!engineerId) throw new Error('Missing engineer')
+
+    const db = supabaseAdmin()
+    const { data, error } = await db
+      .from('engineers')
+      .update({ is_ignored: ignored })
+      .eq('id', engineerId)
+      .select('full_name, is_ignored, include_in_metrics')
+      .single()
+    if (error) throw new Error(error.message)
+    const row = data as { full_name: string; is_ignored: boolean; include_in_metrics: boolean }
+
+    // Restoring someone whose squad is ignored cannot work: the trigger puts them
+    // straight back, because a member of an ignored squad is ignored. Say so rather
+    // than reporting a success the next page load contradicts.
+    if (!ignored && row.is_ignored) {
+      return {
+        ok: false,
+        message: `${row.full_name} stays ignored while their squad is. Restore the squad first.`,
+      }
+    }
+
+    revalidateReadPaths()
+    return {
+      ok: true,
+      message: ignored
+        ? `${row.full_name} ignored — they and everything attributed to them are out of every metric`
+        : `${row.full_name} restored${row.include_in_metrics ? '' : ', still excluded from per-engineer rates'}`,
+    }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/**
+ * Take a squad out of the product altogether, or put it back.
+ *
+ * Cascades to its members, recorded as ignored because of the squad, so restoring
+ * the squad restores exactly the people it took and leaves anyone ignored in their
+ * own right alone. Work that reaches this squad through a repository mapping rather
+ * than through a person goes too.
+ */
+export async function toggleSquadIgnored(formData: FormData): Promise<ActionResult> {
+  try {
+    await requireAdmin()
+    const squadId = String(formData.get('squadId') ?? '')
+    const ignored = String(formData.get('ignored') ?? '') === 'true'
+    if (!squadId) throw new Error('Missing squad')
+
+    const db = supabaseAdmin()
+
+    // Counted on the side of the change where the cascade is still legible: restoring
+    // resets ignored_source to 'manual', so afterwards there is no way to tell who
+    // came back with the squad and who was never ignored at all.
+    const cascade = () =>
+      db
+        .from('engineers')
+        .select('id', { count: 'exact', head: true })
+        .eq('squad_id', squadId)
+        .eq('is_ignored', true)
+        .eq('ignored_source', 'squad')
+
+    const before = ignored ? null : (await cascade()).count
+    const { data, error } = await db
+      .from('squads')
+      .update({ is_ignored: ignored })
+      .eq('id', squadId)
+      .select('name')
+      .single()
+    if (error) throw new Error(error.message)
+    const { name } = data as { name: string }
+
+    const people = (ignored ? (await cascade()).count : before) ?? 0
+    const withPeople = people === 1 ? '1 person' : `${people} people`
+    revalidateReadPaths()
+    return {
+      ok: true,
+      message: ignored
+        ? `${name} ignored${people > 0 ? `, and ${withPeople} with it` : ''}`
+        : `${name} restored${people > 0 ? `, along with ${withPeople}` : ''}`,
+    }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/** Ignoring moves numbers on every page, so every page is refreshed. */
+function revalidateReadPaths() {
+  for (const path of ['/admin', '/people', '/squads', '/delivery', '/performance', '/sprints', '/']) {
+    revalidatePath(path)
+  }
+}
+
 /** Point a GitLab repository at the squad that owns it. */
 export async function setProjectSquad(formData: FormData): Promise<ActionResult> {
   try {

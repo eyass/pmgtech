@@ -128,21 +128,44 @@ export function getAttentionList(squadId?: string, limit = 25) {
 }
 
 // --- plain table reads --------------------------------------------------------
+//
+// The aggregation RPCs and views handle ignored rows themselves (migration 0020),
+// but these selects go straight at the tables, so they filter here. Each has an
+// `…ForAdmin` twin that does not: the admin screen is the one place an ignored row
+// has to be visible, because it is where someone restores it.
+
+const SQUAD_COLUMNS = 'id, key, name, description, colour, sort_order, is_active, is_ignored'
+
+const ENGINEER_COLUMNS =
+  'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, employment_type, is_active, include_in_metrics, include_in_metrics_source, seniority_key, seniority_source, squad_id, squad_source, hibob_id, is_ignored, ignored_source'
 
 export async function getSquads(): Promise<SquadRow[]> {
   const { data, error } = await supabaseAdmin()
     .from('squads')
-    .select('id, key, name, description, colour, sort_order, is_active')
+    .select(SQUAD_COLUMNS)
+    .eq('is_ignored', false)
     .order('sort_order')
   if (error) throw new Error(`Failed to load squads: ${error.message}`)
   return (data ?? []) as SquadRow[]
 }
 
+/** Every squad, ignored ones included. Admin screen only. */
+export async function getSquadsForAdmin(): Promise<SquadRow[]> {
+  const { data, error } = await supabaseAdmin()
+    .from('squads')
+    .select(SQUAD_COLUMNS)
+    .order('sort_order')
+  if (error) throw new Error(`Failed to load squads: ${error.message}`)
+  return (data ?? []) as SquadRow[]
+}
+
+/** Null for an ignored squad, which is what turns /squads/[key] into a 404 for it. */
 export async function getSquadByKey(key: string): Promise<SquadRow | null> {
   const { data, error } = await supabaseAdmin()
     .from('squads')
-    .select('id, key, name, description, colour, sort_order, is_active')
+    .select(SQUAD_COLUMNS)
     .eq('key', key)
+    .eq('is_ignored', false)
     .maybeSingle()
   if (error) throw new Error(`Failed to load squad ${key}: ${error.message}`)
   return (data as SquadRow | null) ?? null
@@ -151,21 +174,30 @@ export async function getSquadByKey(key: string): Promise<SquadRow | null> {
 export async function getEngineers(): Promise<EngineerRow[]> {
   const { data, error } = await supabaseAdmin()
     .from('engineers')
-    .select(
-      'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, employment_type, is_active, include_in_metrics, include_in_metrics_source, seniority_key, seniority_source, squad_id, squad_source, hibob_id',
-    )
+    .select(ENGINEER_COLUMNS)
+    .eq('is_ignored', false)
     .order('full_name')
   if (error) throw new Error(`Failed to load engineers: ${error.message}`)
   return (data ?? []) as EngineerRow[]
 }
 
+/** Everyone, ignored rows included. Admin screen only. */
+export async function getEngineersForAdmin(): Promise<EngineerRow[]> {
+  const { data, error } = await supabaseAdmin()
+    .from('engineers')
+    .select(ENGINEER_COLUMNS)
+    .order('full_name')
+  if (error) throw new Error(`Failed to load engineers: ${error.message}`)
+  return (data ?? []) as EngineerRow[]
+}
+
+/** Null for an ignored person, which is what turns /people/[id] into a 404 for them. */
 export async function getEngineer(id: string): Promise<EngineerRow | null> {
   const { data, error } = await supabaseAdmin()
     .from('engineers')
-    .select(
-      'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, employment_type, is_active, include_in_metrics, include_in_metrics_source, seniority_key, seniority_source, squad_id, squad_source, hibob_id',
-    )
+    .select(ENGINEER_COLUMNS)
     .eq('id', id)
+    .eq('is_ignored', false)
     .maybeSingle()
   if (error) throw new Error(`Failed to load engineer: ${error.message}`)
   return (data as EngineerRow | null) ?? null
@@ -200,9 +232,18 @@ export async function getUnmatchedIdentities(): Promise<UnmatchedIdentityRow[]> 
  * recalculate instead of going stale.
  */
 export async function getBridgeSuggestions(): Promise<BridgeRow[]> {
-  const rows = await loadBridgeCandidates(supabaseAdmin())
+  const db = supabaseAdmin()
+  const [rows, ignored] = await Promise.all([
+    loadBridgeCandidates(db),
+    db.from('engineers').select('id').eq('is_ignored', true),
+  ])
+  // A suggestion pointing at an ignored person is not worth offering: accepting it
+  // writes a link whose whole point is to make history visible, and that history
+  // would stay hidden. The account keeps showing up under unmapped identities.
+  const ignoredIds = new Set(((ignored.data ?? []) as { id: string }[]).map((r) => r.id))
   return rows
     .filter((row) => row.verdict.action !== 'link' && row.verdict.action !== 'skip')
+    .filter((row) => !(row.engineerId && ignoredIds.has(row.engineerId)))
     .sort((a, b) => b.mrs - a.mrs)
 }
 
@@ -437,7 +478,7 @@ export async function getSyncAlerts(): Promise<SyncAlert[]> {
 export async function getDataFreshness() {
   const db = supabaseAdmin()
   const [engineers, mrs, issues, lastRun] = await Promise.all([
-    db.from('engineers').select('id', { count: 'exact', head: true }),
+    db.from('engineers').select('id', { count: 'exact', head: true }).eq('is_ignored', false),
     db.from('merge_requests').select('id', { count: 'exact', head: true }),
     db.from('jira_issues').select('id', { count: 'exact', head: true }),
     db

@@ -202,6 +202,28 @@ People-first, with fallbacks:
 - **Jira issues** — a manual override, then the sprint's board, then the
   assignee's squad, then the Jira project's squad.
 
+### Two ways to take someone out, for two different problems
+
+- **Exclude from metrics** (`include_in_metrics`) takes a person out of the
+  denominators — headcount, cohorts, per-engineer rates — and keeps everything
+  they shipped counting towards their squad. Managers and leadership default to
+  excluded from their HiBob title. This is the tool for someone whose job is not
+  measured in merge requests.
+- **Ignore** (`is_ignored`, migration `0020_ignored_data.sql`) takes the row out
+  of the product altogether: no headcount, no cohort, no squad total, no profile
+  page, and nothing they authored, reviewed or was assigned counts anywhere. This
+  is the tool for a row that should not exist — a duplicate person, a contractor
+  nobody tracks, a placeholder squad. Production deployments are the exception,
+  because a deploy is a fact about the system rather than about the person who
+  triggered it.
+
+Ignoring a squad takes its members with it, recorded as such, so restoring the
+squad restores exactly the people it took and leaves anyone ignored in their own
+right alone. Rows are kept rather than deleted — deleting one invites the next
+sync to recreate it and takes its identity mappings with it — and the flags an
+ignored row loses are remembered, so restoring hands them back rather than
+guessing. Both are set on the admin page.
+
 ### Resumable sync
 
 One merge request costs four GitLab API calls (detail, commits, notes,

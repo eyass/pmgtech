@@ -112,16 +112,28 @@ export function ToggleButton({
   fields,
   label,
   title,
+  confirm,
 }: {
   action: Action
   fields: Record<string, string>
   label: string
   title?: string
+  /**
+   * Ask before submitting. Used where the button moves numbers on every page —
+   * ignoring a squad takes its people with it, and nothing on this row says so.
+   */
+  confirm?: string
 }) {
   const [result, formAction] = useAction(action)
 
   return (
-    <form action={formAction} className="flex items-center gap-2">
+    <form
+      action={formAction}
+      onSubmit={(event) => {
+        if (confirm && !window.confirm(confirm)) event.preventDefault()
+      }}
+      className="flex items-center gap-2"
+    >
       {Object.entries(fields).map(([name, value]) => (
         <input key={name} type="hidden" name={name} value={value} />
       ))}
