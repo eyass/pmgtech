@@ -4,7 +4,13 @@
  * maintained by hand and kept in step with the migrations.
  */
 
-export type SquadKey = 'buyer' | 'seller' | 'monetization' | 'growth'
+/**
+ * Squads are rows in `squads`, not a fixed set — DevExp was added after the
+ * four product squads, and the admin screen can add more. Kept as a named
+ * string so the RPC shapes below still read as squad keys rather than
+ * anonymous strings.
+ */
+export type SquadKey = string
 
 export interface SquadScorecard {
   squad_id: string

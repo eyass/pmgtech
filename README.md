@@ -1,8 +1,8 @@
 # PMG Engineering Tracker
 
 Delivery health for the PMG engineering org, split by squad — **Team Buyer**,
-**Team Seller**, **Team Monetization** and **Team Growth** — built from GitLab,
-Jira and HiBob.
+**Team Seller**, **Team Monetization**, **Team Growth** and **DevExp** — built
+from GitLab, Jira and HiBob.
 
 Next.js 16 on Vercel, Postgres on Supabase. Aggregation happens in Postgres, so a
 page render is a handful of RPC calls rather than a fan-out of row fetches.
