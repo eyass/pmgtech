@@ -148,9 +148,13 @@ export const TEAM_TARGETS = {
   unplanned_work_pct: { good: 20, bad: 40, direction: 'lower-better' as const },
 } as const
 
+// 'typical' covers two cases on purpose: sitting in the middle of the cohort, and sitting
+// near enough to the median that the difference is not worth a conversation. The RPC
+// requires a material gap before it will say 'above' or 'below' at all, so the label says
+// "no meaningful gap" rather than implying the engineer landed exactly on the median.
 export const BAND_LABEL: Record<Band, string> = {
   above: 'Above typical for level',
-  typical: 'Typical for level',
+  typical: 'No meaningful gap from others at level',
   below: 'Below typical for level',
   insufficient: 'Not enough data',
 }

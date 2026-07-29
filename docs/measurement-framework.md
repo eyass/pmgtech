@@ -36,10 +36,10 @@ regression in the other:
 | Reviews given | Review depth — approving without reading is visible |
 | Story points closed | Unplanned-work share |
 
-## The three guardrails
+## The four guardrails
 
-Enforced in SQL (`supabase/migrations/0010_performance_rpcs.sql`), not in the UI, so a future caller
-cannot bypass them:
+Enforced in SQL (`supabase/migrations/0010_performance_rpcs.sql`, amended by
+`0018_material_performance_bands.sql`), not in the UI, so a future caller cannot bypass them:
 
 1. **Within-level only.** Percentiles are computed against the engineer's own seniority cohort.
    Comparing a junior to a staff engineer is meaningless and is not offered.
@@ -47,10 +47,25 @@ cannot bypass them:
    the period.
 3. **Minimum cohort.** Bands are suppressed when fewer than 3 people share a level, because with two
    people a "comparison" just names one of them.
+4. **Minimum difference.** A band reads `above` or `below` only when the gap from the cohort median
+   is large enough to matter; otherwise it reads `typical`. A rank on its own always finds a top and
+   a bottom quartile, even among five seniors whose cycle times are 19, 20, 20, 21 and 22 hours —
+   and the 22-hour engineer does not deserve to be asked what is slowing them down.
 
-And a fourth by omission: **there is no composite individual score.** Nothing to sort by, nothing to
-stack-rank on. This is deliberate — "reviews a lot, ships less" is information, and flattening it to
-a number destroys exactly the signal a manager needs.
+| Banded metric | Has to differ from the cohort median by |
+| --- | --- |
+| Median cycle time | 25%, relative — the same proportion is hours in a slow cohort and minutes in a fast one |
+| Review coverage received | 10 percentage points, absolute — it is already a percentage, so a relative test would compound |
+| Reviews given | 2 reviews **and** 25% — the floor stops 1-vs-2 reading as a doubling, the percentage stops a large median hiding 12-vs-20 |
+
+`insufficient` and `typical` are different statements and stay distinct: the first means the tool
+cannot see enough to have an opinion, the second means it can see and the engineer sits with their
+cohort. Profile shape is deliberately exempt — it is descriptive rather than evaluative, so landing
+just either side of the median costs nobody anything.
+
+And a fifth guardrail by omission: **there is no composite individual score.** Nothing to sort by,
+nothing to stack-rank on. This is deliberate — "reviews a lot, ships less" is information, and
+flattening it to a number destroys exactly the signal a manager needs.
 
 ---
 
@@ -158,5 +173,8 @@ published bands. They are a starting point, not universal truth — after a quar
 recalibrate them to what good actually looks like here. They are the only place in the app where a
 metric is judged against an absolute number, and they apply to squads only.
 
-The `>= 5 MRs` and `>= 3 peers` thresholds are in the `engineer_profiles` RPC. Raise them if the
-bands feel noisy; do not lower them.
+The `>= 5 MRs` and `>= 3 peers` thresholds are in the `engineer_profiles` RPC, alongside the
+materiality gates (25% on cycle time, 10 points on coverage, 2 reviews and 25% on reviews given).
+Raise any of them if the bands feel noisy; do not lower them. If a band still reads `above` or
+`below` for someone who is plainly in the middle of their cohort, the gate is too loose, not the
+rank — that is the number to change.
