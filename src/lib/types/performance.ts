@@ -132,6 +132,16 @@ export interface AssessmentSummaryRow {
  * judged against an absolute number, and they apply to squads, never to people.
  * Loosely calibrated on DORA's published performance bands; tune them to what
  * good looks like here rather than treating them as universal truth.
+ *
+ * **No longer the source of truth.** Since `0027_configurable_targets.sql` the
+ * live thresholds are rows in `metric_targets`, editable from the admin screen
+ * without a deploy, and `metric_targets` was seeded from exactly the numbers
+ * below. What this block is now is the *fallback*: the values used when the table
+ * cannot be reached or has no row for a key. It is deliberately kept in code
+ * rather than reduced to a comment, because the alternative fallback — zero, or
+ * nothing — would either make every squad look terrible or make a page fail to
+ * render, and both of those are worse than a slightly stale target. See
+ * `src/lib/targets.ts` for how a stored row and this fallback are merged.
  */
 export const TEAM_TARGETS = {
   deploys_per_week: { good: 5, bad: 1, direction: 'higher-better' as const },
@@ -188,6 +198,14 @@ export type ScoreConfidence = 'high' | 'thin' | 'no_cohort'
 /** Whether the score's gap from the cohort is large enough to be worth saying. */
 export type Standing = 'top' | 'bottom' | 'typical' | 'unread'
 
+/**
+ * Which unit the throughput dimension counted in. Chosen once org-wide (see
+ * `0023_complexity_weighted_throughput.sql`): `complexity` means merge requests were
+ * weighted by how much they contained, `count` means they were counted raw because
+ * too little of the work has a measured size yet.
+ */
+export type ThroughputBasis = 'complexity' | 'count'
+
 export interface EngineerOutlier {
   engineer_id: string
   full_name: string
@@ -231,6 +249,21 @@ export interface EngineerOutlier {
   large_mr_pct: number | null
   reverts_authored: number
   last_active_at: string | null
+  /**
+   * Complexity-weighted merge requests, in units of "median merged MR for the
+   * period". Null until sizes have been measured. Compare against `merged_mrs`: far
+   * below it means their changes are smaller than the org's typical one.
+   */
+  effective_mrs: number | null
+  points_per_mr: number | null
+  median_churn: number | null
+  /** Share of their merge requests at the trivial floor — 10 lines or fewer, one file. */
+  trivial_mr_pct: number | null
+  /** How much of *their* work has a measured size. Low means effective_mrs understates. */
+  sized_mr_pct: number | null
+  /** How much of the *org's* work has one. This is what picks the basis. */
+  org_sized_mr_pct: number | null
+  throughput_basis: ThroughputBasis
 }
 
 export interface SquadOutlier {
@@ -258,6 +291,14 @@ export interface SquadOutlier {
   cycle_sample: number
   deploy_sample: number
   mttr_sample: number
+  effective_mrs: number | null
+  /** The weighted rate scored against the same 4/1 target as the raw one. */
+  effective_mrs_per_engineer_week: number | null
+  points_per_mr: number | null
+  median_churn: number | null
+  trivial_mr_pct: number | null
+  sized_mr_pct: number | null
+  throughput_basis: ThroughputBasis
 }
 
 /**
@@ -265,6 +306,9 @@ export interface SquadOutlier {
  * number was scored against. Six of these thresholds are the team targets above;
  * `mrs_per_engineer_week` and `reviews_per_engineer_week` are set from this org's
  * own spread and are the two most arguable numbers in the scoring.
+ *
+ * Fallback, on the same terms as TEAM_TARGETS above: `metric_targets` was seeded
+ * from these numbers in 0027 and is what the score is read against now.
  */
 export const SQUAD_SCORE_RUBRIC = {
   throughput: {
@@ -294,9 +338,114 @@ export const SQUAD_SCORE_RUBRIC = {
   },
 } as const
 
+/** Which of the four squad dimensions a scored metric feeds. */
+export type SquadScoreDimension = keyof typeof SQUAD_SCORE_RUBRIC
+
+/** Which way is better. A fact about the metric, not a policy choice. */
+export type MetricDirection = 'higher-better' | 'lower-better'
+
+type SquadRubricMetric = (typeof SQUAD_SCORE_RUBRIC)[SquadScoreDimension]['metrics'][number]
+
+/**
+ * Every metric with an absolute target: the eleven team targets, plus the two
+ * per-engineer rates that only ever existed inside the squad rubric.
+ */
+export type MetricTargetKey = keyof typeof TEAM_TARGETS | SquadRubricMetric['key']
+
+/** A threshold pair and the direction that says which end is which. */
+export interface MetricTarget {
+  good: number
+  bad: number
+  direction: MetricDirection
+}
+
+/** A target plus everything the admin screen and the squad score need to know about it. */
+export interface MetricTargetDefault extends MetricTarget {
+  key: MetricTargetKey
+  label: string
+  /** Null for the six that only colour a number on the team pages. */
+  dimension: SquadScoreDimension | null
+  /** Relative weight inside that dimension. Null when `dimension` is. */
+  weight: number | null
+  sortOrder: number
+}
+
+/**
+ * Display order, scored metrics first and grouped by dimension. Mirrors
+ * `metric_targets.sort_order` in 0027 so the admin screen reads the same way
+ * whether it is rendering stored rows or this fallback.
+ */
+const METRIC_TARGET_ORDER: readonly MetricTargetKey[] = [
+  'mrs_per_engineer_week',
+  'deploys_per_week',
+  'median_cycle_hours',
+  'change_failure_pct',
+  'mttr_hours',
+  'review_coverage_pct',
+  'reviews_per_engineer_week',
+  'flow_efficiency_pct',
+  'median_review_response_hours',
+  'review_gini',
+  'cross_squad_review_pct',
+  'sprint_completion_pct',
+  'unplanned_work_pct',
+]
+
+/** Labels for the six that are not in the squad rubric and so have none there. */
+const TEAM_ONLY_LABELS: Record<string, string> = {
+  flow_efficiency_pct: 'Flow efficiency',
+  median_review_response_hours: 'Review response time (median hours)',
+  review_gini: 'Review load Gini',
+  cross_squad_review_pct: 'Cross-squad reviews',
+  sprint_completion_pct: 'Sprint completion',
+  unplanned_work_pct: 'Unplanned work',
+}
+
+/**
+ * The fallback target set, assembled from the two blocks above rather than
+ * restated — a third copy of thirteen numbers is a third chance to disagree with
+ * itself. Where a key appears in both, the squad rubric wins on label, weight and
+ * dimension, and `test/targets.test.ts` pins that the two agree on the numbers.
+ *
+ * Runtime reads should go through `resolveMetricTargets` in `src/lib/targets.ts`,
+ * which layers the stored rows from `metric_targets` over this.
+ */
+export const METRIC_TARGET_DEFAULTS: Record<MetricTargetKey, MetricTargetDefault> = (() => {
+  const scored = new Map<string, { dimension: SquadScoreDimension; metric: SquadRubricMetric }>()
+  for (const [dimension, block] of Object.entries(SQUAD_SCORE_RUBRIC) as [
+    SquadScoreDimension,
+    (typeof SQUAD_SCORE_RUBRIC)[SquadScoreDimension],
+  ][]) {
+    for (const metric of block.metrics) scored.set(metric.key, { dimension, metric })
+  }
+
+  const out = {} as Record<MetricTargetKey, MetricTargetDefault>
+  METRIC_TARGET_ORDER.forEach((key, index) => {
+    const team = (TEAM_TARGETS as Record<string, MetricTarget | undefined>)[key]
+    const hit = scored.get(key)
+    // Direction comes from TEAM_TARGETS where it is stated, and from which side of
+    // `bad` the `good` value sits on for the two squad-only rates. Both agree for
+    // the six keys that appear in both blocks.
+    const good = hit ? hit.metric.good : team!.good
+    const bad = hit ? hit.metric.bad : team!.bad
+    out[key] = {
+      key,
+      label: hit ? hit.metric.label : (TEAM_ONLY_LABELS[key] ?? key),
+      good,
+      bad,
+      direction: team ? team.direction : good > bad ? 'higher-better' : 'lower-better',
+      dimension: hit ? hit.dimension : null,
+      weight: hit ? hit.metric.weight : null,
+      sortOrder: (index + 1) * 10,
+    }
+  })
+  return out
+})()
+
 /** What each engineer dimension is built from, for the same reason. */
 export const ENGINEER_SCORE_RUBRIC = {
-  throughput: 'Merged merge requests (×2) and resolved issues (×1), against the level median',
+  throughput:
+    'Complexity-weighted merge requests (×2) and resolved issues (×1), against the level median',
   flow: 'Median cycle time, against the level median',
   quality: 'Review coverage received (×2), large-MR share (×1) and reverts authored (×1)',
   collaboration: 'Reviews given (×2) and colleagues reviewed for (×1)',
@@ -309,4 +458,46 @@ export function scoreTone(score: number | null | undefined): 'good' | 'warn' | '
   if (score < 35) return 'bad'
   if (score < 45) return 'warn'
   return 'neutral'
+}
+
+/**
+ * How a merge request's size becomes a weight (`0022_change_size_and_complexity.sql`),
+ * mirrored here so the UI can explain a number rather than just show it.
+ */
+export const COMPLEXITY_RUBRIC = {
+  formula: 'log₂(1 + churn ÷ median churn) × breadth, capped at 6, floored at 0.1',
+  unit: 'One point is the org’s median merged merge request for the period',
+  trivialFloor: '10 lines or fewer in a single file scores 0.1 — a twentieth of a median MR',
+  cap: 'Capped at 6 so one vendored-dependency dump cannot outscore a quarter of real work',
+  breadth: 'Up to 1.5× for a change spread across many files',
+  blindSpot:
+    'Nothing here parses source, so nesting and cleverness are invisible. A hard one-line fix scores 0.1 like a typo — that case needs a human.',
+} as const
+
+/** Coverage below this and throughput falls back to counting merge requests. */
+export const COMPLEXITY_COVERAGE_FLOOR = 60
+
+/**
+ * The ladder, most junior first. Mirrors the `seniority_levels.rank` seeded in
+ * `0001_core.sql` — the outlier RPCs return a level's key and label but not its
+ * rank, and a cohort chart has to draw the rows in ladder order rather than in
+ * whatever order the rows arrived.
+ */
+export const SENIORITY_ORDER: readonly string[] = [
+  'unknown',
+  'intern',
+  'junior',
+  'mid',
+  'senior',
+  'lead',
+  'staff',
+  'principal',
+  'manager',
+  'director',
+]
+
+/** Position on the ladder; unlisted keys sort last rather than throwing. */
+export function seniorityRank(key: string): number {
+  const i = SENIORITY_ORDER.indexOf(key)
+  return i === -1 ? SENIORITY_ORDER.length : i
 }

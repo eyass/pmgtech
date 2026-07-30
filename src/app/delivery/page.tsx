@@ -1,5 +1,6 @@
 import { SquadBarChart, TrendChart } from '@/components/charts'
 import { AttributionBanner } from '@/components/coverage'
+import { SprintReview } from '@/components/sections/sprint-review'
 import {
   Card,
   GuardedValue,
@@ -32,9 +33,9 @@ export const dynamic = 'force-dynamic'
 export default async function DeliveryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ period?: string }>
+  searchParams: Promise<{ period?: string; squad?: string }>
 }) {
-  const { period } = await searchParams
+  const { period, squad: squadFilter } = await searchParams
   const { key, range, bucket } = resolvePeriod(period)
 
   const [kpis, squads, trend, attention] = await Promise.all([
@@ -302,6 +303,10 @@ export default async function DeliveryPage({
           ))}
         </Table>
       </section>
+
+      {/* --- sprints, merged in from their own page --------------------------- */}
+
+      <SprintReview squadFilter={squadFilter} />
     </div>
   )
 }

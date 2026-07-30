@@ -1,6 +1,10 @@
 import Link from 'next/link'
 
+import { AxisSummary } from '@/components/axis-summary'
+import { CohortStrip, type Cohort } from '@/components/cohort-strip'
 import { BandPill, ShapePill } from '@/components/performance'
+import { Scatter, type ScatterPoint } from '@/components/scatter'
+import { SquadProfile, type SquadProfileRow } from '@/components/squad-profile'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { hours, nf, pct } from '@/lib/format'
 import {
@@ -11,8 +15,11 @@ import {
   resolvePeriod,
 } from '@/lib/queries'
 import {
+  COMPLEXITY_COVERAGE_FLOOR,
+  COMPLEXITY_RUBRIC,
   ENGINEER_SCORE_RUBRIC,
   scoreTone,
+  seniorityRank,
   SQUAD_SCORE_RUBRIC,
   type EngineerOutlier,
   type ScoreConfidence,
@@ -34,13 +41,52 @@ export const metadata = { title: 'Outliers — PMG Engineering Tracker' }
  * tally from the banding logic sits beside each engineer's score to say whether
  * the gap that produced their rank is large enough to be real.
  */
+/**
+ * The dimensions a reader can put on an axis.
+ *
+ * The composite score is deliberately not offered: it is built out of these four,
+ * so plotting it against one of them would show mostly its own reflection.
+ */
+const DIMENSIONS = {
+  throughput: {
+    label: 'Throughput',
+    get: (e: EngineerOutlier) => e.throughput_score,
+  },
+  flow: { label: 'Flow', get: (e: EngineerOutlier) => e.flow_score },
+  quality: { label: 'Quality', get: (e: EngineerOutlier) => e.quality_score },
+  collaboration: {
+    label: 'Collaboration',
+    get: (e: EngineerOutlier) => e.collaboration_score,
+  },
+} as const
+
+type DimensionKey = keyof typeof DIMENSIONS
+
+function resolveDimension(value: string | undefined, fallback: DimensionKey): DimensionKey {
+  return value && value in DIMENSIONS ? (value as DimensionKey) : fallback
+}
+
+/** "Marcin Niemirski" → "Marcin N." — short enough to sit beside a dot without colliding. */
+function shortName(full: string): string {
+  const parts = full.trim().split(/\s+/)
+  if (parts.length < 2) return parts[0] ?? full
+  return `${parts[0]} ${parts[parts.length - 1]![0]}.`
+}
+
 export default async function OutliersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ period?: string; squad?: string }>
+  searchParams: Promise<{ period?: string; squad?: string; x?: string; y?: string }>
 }) {
-  const { period, squad: squadFilter } = await searchParams
+  const { period, squad: squadFilter, x: xParam, y: yParam } = await searchParams
   const { key, range } = resolvePeriod(period)
+  // Throughput against quality by default: "how much" against "how well" is the
+  // tension a delivery lead is usually looking for.
+  const xKey = resolveDimension(xParam, 'throughput')
+  const yRaw = resolveDimension(yParam, 'quality')
+  // A dimension against itself is a diagonal line and tells nobody anything.
+  const yKey: DimensionKey =
+    yRaw === xKey ? (xKey === 'quality' ? 'throughput' : 'quality') : yRaw
 
   const squads = await getSquads()
   const selected = squadFilter ? squads.find((s) => s.key === squadFilter) : undefined
@@ -51,6 +97,64 @@ export default async function OutliersPage({
   ])
 
   const scored = engineers.filter((e) => e.score !== null)
+
+  // A dimension with no data drops out of the score rather than counting as zero,
+  // so a row can be scored overall and still have nothing to place on one axis.
+  // Those are left off the plot and counted underneath rather than put at zero.
+  const scatterPoints: ScatterPoint[] = engineers.flatMap((e) => {
+    const x = DIMENSIONS[xKey].get(e)
+    const y = DIMENSIONS[yKey].get(e)
+    if (x === null || y === null) return []
+    return [
+      {
+        id: e.engineer_id,
+        name: e.full_name,
+        shortName: shortName(e.full_name),
+        x,
+        y,
+        squad: e.squad_name,
+        level: e.seniority_label ?? e.seniority_key,
+        rank: e.rank_in_org,
+        score: e.score,
+        solid: e.score_confidence === 'high',
+        confidenceNote: e.score_confidence === 'high' ? null : e.confidence_reason,
+      },
+    ]
+  })
+  const unplaced = engineers.length - scatterPoints.length
+
+  // Cohorts in ladder order, because the ranking's whole claim is that people are
+  // scored against their own level and the rows have to read as a ladder to check it.
+  const cohorts: Cohort[] = Object.values(
+    scored.reduce<Record<string, Cohort>>((acc, e) => {
+      acc[e.seniority_key] ??= {
+        key: e.seniority_key,
+        label: e.seniority_label ?? e.seniority_key,
+        members: [],
+      }
+      acc[e.seniority_key]!.members.push({
+        id: e.engineer_id,
+        name: e.full_name,
+        score: e.score!,
+        solid: e.score_confidence === 'high',
+        note: e.score_confidence === 'high' ? null : e.confidence_reason,
+      })
+      return acc
+    }, {}),
+  ).sort((a, b) => seniorityRank(a.key) - seniorityRank(b.key))
+
+  const squadProfiles: SquadProfileRow[] = squadRows.map((s) => ({
+    key: s.squad_key,
+    name: s.squad_name,
+    score: s.score,
+    dimensions: {
+      throughput: s.throughput_score,
+      flow: s.flow_score,
+      quality: s.quality_score,
+      collaboration: s.collaboration_score,
+    },
+  }))
+
   const bestSquad = squadRows[0]
   const worstSquad = squadRows[squadRows.length - 1]
   const best = scored[0]
@@ -68,7 +172,14 @@ export default async function OutliersPage({
           </p>
         </div>
         <div className="flex flex-wrap gap-1">
-          <FilterLink period={key} squad={undefined} active={!selected} label="All squads" />
+          <FilterLink
+            period={key}
+            squad={undefined}
+            active={!selected}
+            label="All squads"
+            x={xKey}
+            y={yKey}
+          />
           {squads
             .filter((s) => s.is_active)
             .map((s) => (
@@ -78,6 +189,8 @@ export default async function OutliersPage({
                 squad={s.key}
                 active={selected?.key === s.key}
                 label={s.name}
+                x={xKey}
+                y={yKey}
               />
             ))}
         </div>
@@ -115,6 +228,115 @@ export default async function OutliersPage({
           }
         />
       </div>
+
+      {/* --- what throughput is counting in ----------------------------------- */}
+
+      <ComplexityBanner rows={engineers} />
+
+      {/* --- engineers, placed ------------------------------------------------ */}
+
+      <section>
+        <SectionHeading
+          title="Engineers, placed"
+          hint="Two dimensions against each other, to find who sits apart from the group rather than who is first. Every value here is also in the ranked table below."
+        />
+        <Card>
+          <div className="flex flex-wrap gap-x-8 gap-y-3">
+            <AxisPicker
+              axis="x"
+              legend="Across"
+              current={xKey}
+              other={yKey}
+              period={key}
+              squad={selected?.key}
+            />
+            <AxisPicker
+              axis="y"
+              legend="Up"
+              current={yKey}
+              other={xKey}
+              period={key}
+              squad={selected?.key}
+            />
+          </div>
+          <div className="mt-5 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_15rem]">
+            <Scatter
+              points={scatterPoints}
+              xLabel={DIMENSIONS[xKey].label}
+              yLabel={DIMENSIONS[yKey].label}
+            />
+            <AxisSummary
+              points={scatterPoints}
+              xLabel={DIMENSIONS[xKey].label}
+              yLabel={DIMENSIONS[yKey].label}
+            />
+          </div>
+        </Card>
+        <MetricNote>
+          The two lines are the <strong>cohort median</strong>, not a target anyone set: 50 is
+          the median of each engineer&apos;s own seniority group by construction, so the
+          quadrants fall out of the score rather than being drawn on top of it. Neither axis
+          zooms tighter than 40 points, because 15 points is a full interquartile range and a
+          range fitted to the data would stretch a three-point difference across the whole
+          plot. The two axes can still cover different spans — read the tick numbers before
+          comparing a sideways distance against an upwards one. Distance from a line is
+          ordering more than magnitude in any case; the <strong>gap</strong> column in the
+          table below is what says whether a gap is material.
+          {unplaced > 0
+            ? ` ${unplaced} ${unplaced === 1 ? 'engineer is' : 'engineers are'} not plotted: a dimension with no data drops out of the score instead of counting as zero, so there is nothing to place them at.`
+            : ''}
+        </MetricNote>
+      </section>
+
+      {/* --- is the ranking separating anybody -------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="Spread within each level"
+          hint="One dot per engineer, on the level they are actually scored against. The question this answers is whether the ranking is separating anyone at all."
+        />
+        <Card>
+          <CohortStrip cohorts={cohorts} />
+        </Card>
+        <MetricNote>
+          This is also the score&apos;s own integrity check. A score is built so that 50 is the
+          median of that engineer&apos;s level, so each row&apos;s dots{' '}
+          <strong>have to straddle the line</strong> with roughly half either side. A row sitting
+          entirely on one side is not a strong or a weak cohort — it means the scoring is wrong or
+          the cohort is too small to have a median, and the row count next to each label says which.
+          What the rows show for this org is <strong>bunching</strong>: most people sit inside one
+          interquartile range of their own level, so the honest read is a tight cluster with one or
+          two genuinely separated dots rather than an even spread from first to last. Levels with
+          fewer than three people are marked <em>no median</em>, because there is nothing for a
+          median to be the middle of.
+        </MetricNote>
+      </section>
+
+      {/* --- squads, dimension by dimension ---------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="Squads, dimension by dimension"
+          hint="The four dimensions behind each squad's score, so a single number never hides which half of the work earned it."
+        />
+        <Card>
+          <SquadProfile rows={squadProfiles} />
+        </Card>
+        <MetricNote>
+          These tracks are the one thing on this page that is <strong>not</strong> relative. Squads
+          are scored against the delivery targets on the{' '}
+          <Link href="/performance" className="underline">
+            measurement framework
+          </Link>{' '}
+          page, so the full 0-100 run is
+          drawn every time: 0 is the bad threshold, 100 is the good one, and the tick is genuinely
+          halfway between them rather than the median of the other squads. That is deliberate — a
+          strong org should not manufacture a loser, and a good squad should lose nothing to good
+          colleagues. It is also why these tracks never rescale to the data the way the engineer
+          charts above do: here the thresholds are the point, so shrinking the axis to the spread
+          would throw away the only fixed reference on the page.
+        </MetricNote>
+      </section>
 
       {/* --- how the score works ---------------------------------------------- */}
 
@@ -208,8 +430,13 @@ export default async function OutliersPage({
               <SubScore
                 score={squad.throughput_score}
                 lines={[
-                  `${nf(squad.mrs_per_engineer_week, 2)} MRs/eng/wk`,
+                  squad.throughput_basis === 'complexity'
+                    ? `${nf(squad.effective_mrs_per_engineer_week, 2)} weighted MRs/eng/wk`
+                    : `${nf(squad.mrs_per_engineer_week, 2)} MRs/eng/wk`,
                   `${nf(squad.deploys_per_week, 2)} releases/wk`,
+                  ...(squad.throughput_basis === 'complexity' && squad.points_per_mr !== null
+                    ? [`${nf(squad.points_per_mr, 2)} per MR`]
+                    : []),
                 ]}
               />
               <SubScore score={squad.flow_score} lines={[`${hours(squad.median_cycle_hours)} cycle`]} />
@@ -286,6 +513,61 @@ export default async function OutliersPage({
   )
 }
 
+/**
+ * What the throughput dimension is actually counting, and why.
+ *
+ * This is on the page rather than in the docs because the answer changes by itself:
+ * throughput counts complexity-weighted merge requests once enough of them have a
+ * measured size, and raw merge requests until then. A reader comparing two periods
+ * needs to know which unit they are looking at, and someone reading it the week the
+ * backfill is still running needs to know the weighting is not live yet.
+ */
+function ComplexityBanner({ rows }: { rows: EngineerOutlier[] }) {
+  const first = rows[0]
+  if (!first) return null
+  const weighted = first.throughput_basis === 'complexity'
+  const coverage = first.org_sized_mr_pct ?? 0
+
+  return (
+    <Card
+      className={
+        weighted
+          ? undefined
+          : 'border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30'
+      }
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">
+          Throughput counts {weighted ? 'complexity-weighted merge requests' : 'merge requests'}
+        </h2>
+        <Pill tone={weighted ? 'good' : 'warn'}>{pct(coverage, 1)} of MRs measured</Pill>
+      </div>
+      {weighted ? (
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--color-muted)]">
+          A merge request is worth <strong>{COMPLEXITY_RUBRIC.unit.toLowerCase()}</strong>:{' '}
+          <code className="rounded bg-[var(--color-line)] px-1 py-0.5 text-xs">
+            {COMPLEXITY_RUBRIC.formula}
+          </code>
+          . {COMPLEXITY_RUBRIC.trivialFloor}, so twenty of those are worth two median ones rather
+          than twenty. {COMPLEXITY_RUBRIC.cap}, because rewarding lines linearly would just move
+          the gaming from many-small to one-enormous — and large changes are harder to review.
+        </p>
+      ) : (
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed">
+          <strong>The weighting is not live yet.</strong> Merge-request sizes were never collected
+          — the sync read a GitLab field that does not exist and stored zero for all 2,000 merge
+          requests — so only {pct(coverage, 1)} of this period&apos;s work has a measured size,
+          below the {COMPLEXITY_COVERAGE_FLOOR}% needed. Throughput therefore still counts merge
+          requests, exactly as it did before, and switches to weighted units on its own once the
+          sync&apos;s size backfill has worked through history. Mixing the two units inside one
+          cohort would make its median meaningless, so the basis is chosen once for everybody.
+        </p>
+      )}
+      <MetricNote>{COMPLEXITY_RUBRIC.blindSpot}</MetricNote>
+    </Card>
+  )
+}
+
 function HeadlineCard({
   label,
   name,
@@ -349,6 +631,52 @@ function SubScore({ score, lines }: { score: number | null; lines: string[] }) {
   )
 }
 
+/**
+ * Weighted merge requests against the raw count — the cell where splitting work into
+ * tiny pieces becomes visible. A ratio near 1.0 means their changes are about the
+ * org's median size; 0.1 means they are at the trivial floor.
+ */
+function ComplexityCell({ engineer }: { engineer: EngineerOutlier }) {
+  if (engineer.effective_mrs === null) {
+    return (
+      <Td align="right" numeric>
+        <span className="text-[var(--color-muted)]" title="No merge request of theirs has a measured size yet">
+          not measured
+        </span>
+        <div className="text-[11px] text-[var(--color-muted)]">{nf(engineer.merged_mrs)} MRs</div>
+      </Td>
+    )
+  }
+  const ratio = engineer.points_per_mr
+  // Amber below half a median MR: not a verdict, but the number to ask about.
+  const tone =
+    ratio !== null && ratio < 0.5
+      ? 'text-amber-600 dark:text-amber-400'
+      : ratio !== null && ratio >= 1.5
+        ? 'text-emerald-600 dark:text-emerald-400'
+        : ''
+  return (
+    <Td align="right" numeric>
+      <span className={`font-medium ${tone}`}>{nf(engineer.effective_mrs, 1)}</span>
+      <div className="text-[11px] text-[var(--color-muted)]">
+        <div>
+          {nf(ratio, 2)} / MR · {nf(engineer.median_churn)} lines
+        </div>
+        {engineer.trivial_mr_pct !== null && engineer.trivial_mr_pct > 0 ? (
+          <div title="Merge requests of 10 lines or fewer touching a single file">
+            {pct(engineer.trivial_mr_pct, 0)} trivial
+          </div>
+        ) : null}
+        {engineer.sized_mr_pct !== null && engineer.sized_mr_pct < 100 ? (
+          <div title="The rest have no measured size yet, so this total is an understatement">
+            {pct(engineer.sized_mr_pct, 0)} measured
+          </div>
+        ) : null}
+      </div>
+    </Td>
+  )
+}
+
 function ConfidencePill({ confidence }: { confidence: ScoreConfidence }) {
   if (confidence === 'high') return <Pill tone="good">solid</Pill>
   if (confidence === 'thin') return <Pill tone="warn">thin data</Pill>
@@ -381,6 +709,9 @@ function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
             Gap
           </Th>
           <Th align="right">Throughput</Th>
+          <Th align="right" title="Merge requests weighted by how much each one contained, in units of the org's median merged MR. Well below the raw count means their changes are small.">
+            Weighted MRs
+          </Th>
           <Th align="right">Flow</Th>
           <Th align="right">Quality</Th>
           <Th align="right">Collaboration</Th>
@@ -417,6 +748,7 @@ function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
             score={engineer.throughput_score}
             lines={[`${nf(engineer.merged_mrs)} MRs`, `${nf(engineer.issues_resolved)} issues`]}
           />
+          <ComplexityCell engineer={engineer} />
           <SubScore
             score={engineer.flow_score}
             lines={[hours(engineer.median_cycle_hours)]}
@@ -459,18 +791,78 @@ function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
   )
 }
 
+/**
+ * Which dimension sits on one axis.
+ *
+ * A chart control rather than a data filter — it changes what is drawn, not which
+ * rows are in scope, so it belongs with the chart while the period and squad
+ * filters stay in the one row at the top that scopes the whole page.
+ */
+function AxisPicker({
+  axis,
+  legend,
+  current,
+  other,
+  period,
+  squad,
+}: {
+  axis: 'x' | 'y'
+  legend: string
+  current: DimensionKey
+  other: DimensionKey
+  period: string
+  squad: string | undefined
+}) {
+  return (
+    <div>
+      <p className="text-[11px] uppercase tracking-wide text-[var(--color-muted)]">{legend}</p>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        {(Object.keys(DIMENSIONS) as DimensionKey[]).map((dimension) => {
+          const query = new URLSearchParams({ period })
+          if (squad) query.set('squad', squad)
+          // Picking the dimension that is already on the other axis swaps the two,
+          // which is what someone reaching for it means.
+          const swap = dimension === other
+          query.set('x', axis === 'x' ? dimension : swap ? current : other)
+          query.set('y', axis === 'y' ? dimension : swap ? current : other)
+          const active = dimension === current
+          return (
+            <Link
+              key={dimension}
+              href={`/outliers?${query.toString()}`}
+              aria-current={active ? 'true' : undefined}
+              className={`rounded-lg border px-2.5 py-1 text-xs transition-colors ${
+                active
+                  ? 'border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-surface)]'
+                  : 'border-[var(--color-line)] text-[var(--color-muted)] hover:text-[var(--color-ink)]'
+              }`}
+            >
+              {DIMENSIONS[dimension].label}
+            </Link>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function FilterLink({
   period,
   squad,
   active,
   label,
+  x,
+  y,
 }: {
   period: string
   squad: string | undefined
   active: boolean
   label: string
+  /** Carried through so changing squad does not reset the chart's axes. */
+  x: DimensionKey
+  y: DimensionKey
 }) {
-  const query = new URLSearchParams({ period })
+  const query = new URLSearchParams({ period, x, y })
   if (squad) query.set('squad', squad)
   return (
     <Link

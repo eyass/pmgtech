@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 
 import { currentUser } from '@/lib/auth'
 import { supabaseAdmin } from '@/lib/supabase/admin'
+import { validateTarget, validateWeight } from '@/lib/targets'
 
 /**
  * Admin mutations. Every action re-checks admin status server-side — the UI
@@ -709,5 +710,95 @@ export async function dismissIdentity(formData: FormData): Promise<ActionResult>
     return { ok: true, message: 'Identity dismissed' }
   } catch (error) {
     return fail(error)
+  }
+}
+
+/**
+ * Move a delivery target.
+ *
+ * The one mutation on this screen that changes what a number *means* rather than
+ * which rows are counted. Every squad's composite is scored against these
+ * thresholds, so an edit here moves every squad at once — including squads nobody
+ * was looking at, and in a direction nobody on those squads caused. Hence three
+ * things, none of them optional:
+ *
+ *   1. `direction` is not a parameter. Which way is better is a fact about the
+ *      metric; the editable part is where good and bad sit.
+ *   2. The pair is validated before the write, so an inverted target is refused
+ *      with a sentence rather than landing and scoring every squad backwards. The
+ *      same check exists as a CHECK constraint and a `raise exception` in 0027 —
+ *      three layers, because the failure mode is silent and plausible-looking.
+ *   3. It goes through `set_metric_target`, which records the before, the after and
+ *      who did it in `metric_target_changes` inside the same transaction. A target
+ *      that moved without a row saying so would leave "this squad got worse" and
+ *      "we changed the bar" indistinguishable.
+ */
+export async function setMetricTarget(formData: FormData): Promise<ActionResult> {
+  try {
+    const user = await requireAdmin()
+    const metricKey = String(formData.get('metricKey') ?? '').trim()
+    if (!metricKey) throw new Error('Missing metric')
+
+    const label = String(formData.get('label') ?? '').trim() || metricKey
+    const direction = String(formData.get('direction') ?? '')
+    if (direction !== 'higher-better' && direction !== 'lower-better') {
+      throw new Error(`Unknown direction for ${label}`)
+    }
+
+    const good = Number(String(formData.get('good') ?? '').trim())
+    const bad = Number(String(formData.get('bad') ?? '').trim())
+    const rawWeight = String(formData.get('weight') ?? '').trim()
+    const scored = String(formData.get('scored') ?? '') === 'true'
+    const weight = scored && rawWeight !== '' ? Number(rawWeight) : null
+    const note = String(formData.get('note') ?? '').trim() || null
+
+    const pair = validateTarget({ direction, good, bad, label })
+    if (!pair.ok) throw new Error(pair.message)
+    const weighting = validateWeight({
+      dimension: scored ? 'throughput' : null,
+      weight: scored ? (weight ?? 1) : null,
+      label,
+    })
+    if (!weighting.ok) throw new Error(weighting.message)
+
+    const { error } = await supabaseAdmin().rpc('set_metric_target', {
+      p_metric_key: metricKey,
+      p_good: good,
+      p_bad: bad,
+      p_weight: weight,
+      p_actor: user.email,
+      p_note: note,
+    })
+    if (error) throw new Error(error.message)
+
+    revalidateTargetPaths()
+    return {
+      ok: true,
+      message: `${label}: good ${good}, bad ${bad}${
+        weight !== null ? `, weight ${weight}` : ''
+      } — recorded against ${user.email}`,
+    }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/**
+ * A target edit moves the score on every page that shows one, and /outliers and
+ * /rankings are the two that rank on it — neither is in `revalidateReadPaths`,
+ * because ignoring a row does not change a threshold.
+ */
+function revalidateTargetPaths() {
+  for (const path of [
+    '/admin',
+    '/outliers',
+    '/rankings',
+    '/performance',
+    '/squads',
+    '/delivery',
+    '/trust',
+    '/',
+  ]) {
+    revalidatePath(path)
   }
 }

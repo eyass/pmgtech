@@ -72,7 +72,12 @@ export interface GitLabCommit {
   authored_date: string
   committed_date: string
   parent_ids: string[]
-  stats?: { additions: number; deletions: number; total: number }
+  /**
+   * Only present when something asked for it — `with_stats` on a listing, or the
+   * single-commit endpoint. `total` is not always echoed back, so it is optional:
+   * callers add the two halves rather than trusting a field GitLab may omit.
+   */
+  stats?: { additions: number; deletions: number; total?: number }
 }
 
 export interface GitLabApproval {
@@ -155,6 +160,78 @@ export class GitLabClient {
       source: 'gitlab',
       headers: { 'PRIVATE-TOKEN': this.token },
     })
+  }
+
+  /**
+   * Per-file change metadata for a merge request, without the diff bodies.
+   *
+   * This is the only source here that answers "which files, and how much of each"
+   * without downloading the code. REST has no such endpoint — `/diffs` and
+   * `/changes` both bundle the diff text, so a large merge request costs megabytes
+   * — whereas GraphQL's `diffStats` is a list of `{path, additions, deletions}` and
+   * nothing else, in one request.
+   *
+   * Worth it for more than bandwidth: the paths are what let a lockfile bump stop
+   * counting as five thousand lines of work (see `file-classes.ts`). Line counts
+   * alone cannot tell that apart from a refactor.
+   *
+   * Returns null rather than throwing when GraphQL is unavailable or the merge
+   * request cannot be read, so a caller falls back to commit sums instead of losing
+   * the slice. `errors` in a 200 response is GraphQL's normal failure channel and is
+   * treated as absence, not as success.
+   */
+  async mergeRequestDiffStats(
+    projectPath: string,
+    iid: number,
+  ): Promise<{
+    files: { path: string; additions: number; deletions: number }[]
+    summary: { additions: number; deletions: number; fileCount: number } | null
+  } | null> {
+    const query = `
+      query mrDiffStats($project: ID!, $iid: String!) {
+        project(fullPath: $project) {
+          mergeRequest(iid: $iid) {
+            diffStatsSummary { additions deletions fileCount }
+            diffStats { path additions deletions }
+          }
+        }
+      }`
+
+    try {
+      const { data } = await requestJson<{
+        data?: {
+          project?: {
+            mergeRequest?: {
+              diffStatsSummary?: { additions: number; deletions: number; fileCount: number } | null
+              diffStats?: { path: string; additions: number; deletions: number }[] | null
+            } | null
+          } | null
+        }
+        errors?: { message: string }[]
+      }>(`${this.host}/api/graphql`, {
+        source: 'gitlab',
+        method: 'POST',
+        headers: {
+          'PRIVATE-TOKEN': this.token,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query, variables: { project: projectPath, iid: String(iid) } }),
+      })
+
+      if (data.errors?.length) return null
+      const mr = data.data?.project?.mergeRequest
+      if (!mr) return null
+      const files = mr.diffStats ?? []
+      // An empty file list with no summary means GraphQL answered but knows nothing
+      // about this merge request's diff — absence, not a change of size zero.
+      if (files.length === 0 && !mr.diffStatsSummary) return null
+      return { files, summary: mr.diffStatsSummary ?? null }
+    } catch (error) {
+      if (error instanceof IntegrationError && [400, 403, 404, 405].includes(error.status)) {
+        return null
+      }
+      throw error
+    }
   }
 
   /**
@@ -244,12 +321,48 @@ export class GitLabClient {
     )
   }
 
+  /**
+   * Commits on a merge request.
+   *
+   * `with_stats` is requested because it costs nothing to ask: where the instance
+   * honours it, every commit arrives with its line counts and no follow-up call is
+   * needed. GitLab ignores query parameters it does not recognise, so this is safe
+   * on versions that do not support it — and `commitStats` below is the fallback
+   * for exactly that case. The stats are not assumed present anywhere; callers
+   * check, because assuming they were there is what produced 9,893 commits with a
+   * size of zero.
+   */
   async mergeRequestCommits(projectId: number, iid: number): Promise<GitLabCommit[]> {
     return this.getAll<GitLabCommit>(
       `/projects/${projectId}/merge_requests/${iid}/commits`,
-      {},
+      { with_stats: 'true' },
       5,
     )
+  }
+
+  /**
+   * One commit, with its line counts. The single-commit endpoint documents `stats`,
+   * which is why this is the fallback of record rather than something cleverer: it
+   * costs a call per commit, but it is the only source here that is certain.
+   *
+   * A missing or inaccessible commit returns null rather than throwing — a force-push
+   * can leave a merge request referencing a sha that no longer resolves, and one dead
+   * sha must not end a sync slice.
+   */
+  async commitStats(
+    projectId: number,
+    sha: string,
+  ): Promise<{ additions: number; deletions: number } | null> {
+    try {
+      const { data } = await this.get<GitLabCommit>(
+        `/projects/${projectId}/repository/commits/${encodeURIComponent(sha)}`,
+      )
+      if (!data.stats) return null
+      return { additions: data.stats.additions ?? 0, deletions: data.stats.deletions ?? 0 }
+    } catch (error) {
+      if (error instanceof IntegrationError && [403, 404].includes(error.status)) return null
+      throw error
+    }
   }
 
   /**

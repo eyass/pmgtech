@@ -10,6 +10,7 @@ import {
   ToggleButton,
 } from '@/components/admin-forms'
 import { SyncAlertBanner } from '@/components/coverage'
+import { DeliveryTargetsSection } from '@/components/sections/delivery-targets'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { currentUser } from '@/lib/auth'
 import { integrationStatus } from '@/lib/env'
@@ -18,6 +19,8 @@ import {
   getEngineersForAdmin,
   getGitLabProjects,
   getJiraBoards,
+  getMetricTargetHistory,
+  getMetricTargets,
   getSquadsForAdmin,
   getBridgeSuggestions,
   getSquadSuggestions,
@@ -38,6 +41,7 @@ import {
   setBoardSquad,
   setEngineerSeniority,
   setEngineerSquad,
+  setMetricTarget,
   setProjectSquad,
   toggleEngineerIgnored,
   toggleEngineerMetrics,
@@ -62,6 +66,7 @@ export default async function AdminPage() {
     bridge,
     squadHints,
     syncAlerts,
+    targetSet,
   ] = await Promise.all([
     // The admin variants include ignored rows. This is the one screen that shows
     // them, because it is where they are restored.
@@ -75,15 +80,31 @@ export default async function AdminPage() {
     getBridgeSuggestions(),
     getSquadSuggestions(),
     getSyncAlerts(),
+    getMetricTargets(),
   ])
+
+  // Read after the targets rather than beside them: a change row is labelled with the
+  // metric's current label, and the point of the trail is that the two agree.
+  const targetHistory = await getMetricTargetHistory(targetSet.targets)
 
   const status = integrationStatus()
   // Nothing gets assigned or linked to an ignored row — the result would be invisible
   // everywhere it matters — so the pickers only offer live ones.
   const squadOptions = squads.filter((s) => !s.is_ignored).map((s) => ({ id: s.id, name: s.name }))
-  const engineerOptions = engineers
-    .filter((e) => e.is_active && !e.is_ignored)
-    .map((e) => ({ id: e.id, name: `${e.display_name ?? e.full_name}${e.email ? ` (${e.email})` : ''}` }))
+  // Every engineer in the directory is offered, grouped by standing. Leavers and
+  // hand-added people are the point of the identity pickers rather than an edge case:
+  // an unmapped GitLab account usually belongs to someone who has already left, and
+  // "Add an engineer" defaults to Former employee precisely so their old work can be
+  // attributed. Ignored rows are offered too — they were withheld, which silently put
+  // a third of this directory out of reach with nothing on screen saying so. Linking
+  // to one does hide the work, so the picker states that in the group heading instead
+  // of removing the option.
+  const engineerOptions = engineers.map((e) => ({
+    id: e.id,
+    name: `${e.display_name ?? e.full_name}${e.email ? ` (${e.email})` : ''}`,
+    former: !e.is_active,
+    ignored: e.is_ignored,
+  }))
   const membersBySquad = new Map<string, number>()
   for (const engineer of engineers) {
     if (!engineer.squad_id) continue
@@ -335,7 +356,7 @@ export default async function AdminPage() {
       <section>
         <SectionHeading
           title="Unmapped identities"
-          hint="GitLab and Jira accounts whose email did not match anyone in HiBob. Until they are linked, their work is not attributed to a person or a squad."
+          hint={`GitLab and Jira accounts whose email did not match anyone in HiBob. Until they are linked, their work is not attributed to a person or a squad. Every engineer in the directory is offered — all ${engineers.length}, grouped by whether they are current, former, or ignored — because an unmapped account usually belongs to someone who has already left.`}
         />
         <Table
           empty="Everything is attributed — no unmapped identities."
@@ -468,6 +489,15 @@ export default async function AdminPage() {
           })}
         </Table>
       </section>
+
+      {/* --- delivery targets ------------------------------------------------- */}
+
+      <DeliveryTargetsSection
+        targetSet={targetSet}
+        history={targetHistory}
+        readOnly={readOnly}
+        action={setMetricTarget}
+      />
 
       {/* --- engineers -------------------------------------------------------- */}
 

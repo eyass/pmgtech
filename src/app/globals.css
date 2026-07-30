@@ -17,6 +17,59 @@
   --color-bad: #dc2626;
 }
 
+/**
+ * Chart tokens.
+ *
+ * One series hue, because a scatter compares every point against every other one
+ * and the palette gates for that case only clear three categorical slots — five
+ * squad colours on one plot would be indistinguishable under colour-vision
+ * deficiency. Squad is the filter above the chart instead. Both steps were
+ * validated against this app's own surfaces (#ffffff and #121a2e) rather than
+ * against a default: lightness band, chroma floor and 3:1 contrast all pass.
+ *
+ * `--chart-series-2` is the second and last slot, and it exists for exactly one
+ * case: the two-shape head-to-head, where the whole point is comparing two named
+ * subjects. Checked the same way against both surfaces —
+ *
+ *   light  #b45309 on #ffffff  = 5.02:1   (series #2a78d6 = 4.42:1)
+ *   dark   #d98a2b on #121a2e  = 6.28:1   (series #3987e5 = 4.76:1)
+ *
+ * — and against the series colour under simulated colour-vision deficiency, where
+ * the pair stays far apart in Lab (ΔE ≥ 88 for protanopia, deuteranopia and
+ * tritanopia in both schemes). The two hues are deliberately close in lightness so
+ * neither polygon reads as the heavier one, which is also why the charts never
+ * rely on hue alone: slot A is a solid outline with round vertices, slot B a dashed
+ * outline with diamond vertices, so the pair survives greyscale and a printout.
+ *
+ * `--chart-ref` draws the median and target reference lines, and it was too faint:
+ * #94a3b8 is only 2.56:1 on white, under the 3:1 floor. That line is not
+ * decoration — on the scatter it is the crosshair the quadrants are read from, so
+ * it has to be legible or the chart is not. Both slots are now well clear:
+ *
+ *   light  #64748b on #ffffff  = 4.79:1   (was #94a3b8 = 2.56:1)
+ *   dark   #7c8ba1 on #121a2e  = 4.93:1   (was #64748b = 3.59:1)
+ *
+ * It still sits below the ink and above the grid, so it stays recessive against the
+ * data without disappearing.
+ */
+:root {
+  --chart-series: #2a78d6;
+  --chart-series-2: #b45309;
+  --chart-grid: #e2e8f0;
+  --chart-axis: #cbd5e1;
+  --chart-ref: #64748b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chart-series: #3987e5;
+    --chart-series-2: #d98a2b;
+    --chart-grid: #223049;
+    --chart-axis: #334155;
+    --chart-ref: #7c8ba1;
+  }
+}
+
 @layer base {
   html {
     color-scheme: light dark;
@@ -34,8 +87,16 @@
   }
 }
 
+/**
+ * Dark overrides as plain custom properties, NOT as `@theme` inside the media
+ * query. Tailwind v4 hoists `@theme` blocks out to the top level, so the dark
+ * values were landing in the unconditional `:root` and overwriting the light
+ * ones — the app rendered dark in both schemes. Overriding the variables
+ * directly keeps the media query, and the utilities generated from `@theme`
+ * above resolve through the same variables, so both forms follow the scheme.
+ */
 @media (prefers-color-scheme: dark) {
-  @theme {
+  :root {
     --color-canvas: #0b1020;
     --color-surface: #121a2e;
     --color-ink: #e8edf7;

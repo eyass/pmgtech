@@ -2,7 +2,7 @@ import Link from 'next/link'
 
 import { Card } from '@/components/ui'
 import { nf, pct } from '@/lib/format'
-import type { SyncAlert } from '@/lib/queries'
+import { ATTRIBUTION_BAD, readAttribution, type SyncAlert } from '@/lib/trust'
 import type { OrgKpis } from '@/lib/types/metrics'
 
 /**
@@ -40,6 +40,10 @@ export function SyncAlertBanner({ alerts }: { alerts: SyncAlert[] }) {
         ))}
       </ul>
       <p className="mt-2 text-xs">
+        <Link href="/trust" className="underline">
+          What this makes unquotable
+        </Link>
+        {' · '}
         <Link href="/admin" className="underline">
           Sync history and manual runs
         </Link>
@@ -68,16 +72,15 @@ export function AttributionBanner({
   /** 'squad' wording where the page shows one squad rather than the whole org. */
   scope?: 'org' | 'squad' | 'people'
 }) {
-  const mr = kpis.mr_attribution_pct
-  const commits = kpis.commit_attribution_pct
-  if (mr === null && commits === null) return null
-
-  const worst = Math.min(mr ?? 100, commits ?? 100)
-  // Above 95% the gap is small enough to be noise and the banner is just clutter.
-  if (worst >= 95) return null
+  // The same read `/trust` uses, so the banner and the page cannot disagree about
+  // whether there is a gap or how big it is.
+  const read = readAttribution(kpis)
+  // Nothing measured, or a gap small enough to be noise: either way, no banner.
+  if (read.worst === null || !read.material) return null
+  const { mr, commits, worst } = read
 
   const tone =
-    worst < 70
+    worst < ATTRIBUTION_BAD
       ? 'mb-3 border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/30'
       : 'mb-3 border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30'
 
@@ -112,7 +115,10 @@ export function AttributionBanner({
             </Link>{' '}
             to close it.
           </>
-        ) : null}
+        ) : null}{' '}
+        <Link href="/trust" className="underline">
+          How much to trust today’s numbers
+        </Link>
       </p>
     </Card>
   )

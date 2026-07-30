@@ -19,7 +19,7 @@ page render is a handful of RPC calls rather than a fan-out of row fetches.
 | **Delivery** | DORA with each definition stated inline, plus where merge requests actually lose time. |
 | **Sprints** | Committed vs added mid-sprint vs completed, carryover, and scope creep. |
 | **People** | Per-engineer activity, benchmarked against the median for their own level rather than the whole org. |
-| **Outliers** | Top and bottom, scored and ranked: engineers 0-100 against their own seniority cohort, squads 0-100 against absolute targets. Every sub-score and input is on the row, and thin samples are flagged rather than quietly ranked. |
+| **Outliers** | Top and bottom, scored and ranked: engineers 0-100 against their own seniority cohort, squads 0-100 against absolute targets. Throughput counts merge requests weighted by how much each contained, so twenty ten-line changes are worth two median ones rather than twenty. Every sub-score and input is on the row, and thin samples are flagged rather than quietly ranked. |
 | **Admin** | Connection status, squad/board/repo mappings, unmapped identities, sync history. |
 
 ### On individual metrics
@@ -233,6 +233,33 @@ right alone. Rows are kept rather than deleted — deleting one invites the next
 sync to recreate it and takes its identity mappings with it — and the flags an
 ignored row loses are remembered, so restoring hands them back rather than
 guessing. Both are set on the admin page.
+
+### Change size, and why it was missing
+
+Every merge request and commit in the database recorded a size of **zero** until
+`0022`. The sync read `mr.diff_stats`, a field GitLab's REST merge-request endpoint
+does not return, and fetched merge-request commits without `with_stats`, so both
+writes fell through to `?? 0`. Nothing failed and nothing was logged; three metrics
+built on it (`large_mr_pct`, `median_mr_churn`, squad `code_churn`) simply reported
+that no change in the company's history had ever touched a line.
+
+Two things changed as a result, and the first matters more than the second:
+
+- **A missing measurement now looks missing.** `size_source` records where a size came
+  from, and null means nobody has measured that row. The views expose churn as NULL
+  for those, so a metric withholds itself the way it already does for a thin sample
+  rather than confidently reporting an empty change.
+- **Sizes are collected, cheaply first.** `with_stats` is requested on the commit
+  listing because it costs nothing to ask; commits it does not cover are fetched
+  individually, capped per merge request. A merge request's size is its own diff stats
+  if the instance returns them, otherwise the sum of its commits.
+
+History needs a separate pass, because the merge-request walk advances by
+`updated_at` and never revisits a merged MR — so without one, complexity would only
+ever cover work merged after this shipped. `backfillChangeSizes` runs at the end of a
+GitLab sync on leftover budget only, newest commits first, and shortens its own queue
+each run. Until it has covered 60% of merged MRs, throughput keeps counting merge
+requests rather than weighting them, and the Outliers page says so.
 
 ### Resumable sync
 

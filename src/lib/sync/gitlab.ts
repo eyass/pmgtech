@@ -9,6 +9,12 @@ import {
   type GitLabUser,
 } from '@/lib/integrations/gitlab'
 import { runCommitBridge } from '@/lib/sync/bridge'
+import {
+  commitsNeedingStats,
+  resolveMrSize,
+  type CommitSizeSource,
+} from '@/lib/sync/change-size'
+import { shapeOfChange } from '@/lib/sync/file-classes'
 import { IdentityResolver } from '@/lib/sync/identity'
 import { isProductionEnvironment } from '@/lib/sync/matching'
 import {
@@ -65,6 +71,17 @@ export async function syncGitLab(
      * with time to spare and still have years of history left to walk.
      */
     backfill_complete: 0,
+    /**
+     * Change-size collection. mrs_sized counts merge requests whose line counts were
+     * established; commit_stat_calls is what that cost in extra API calls, and is here
+     * so the price of the measurement is visible next to the measurement.
+     */
+    mrs_sized: 0,
+    mrs_with_paths: 0,
+    mr_sizes_backfilled: 0,
+    commit_stat_calls: 0,
+    sizes_backfilled: 0,
+    mrs_resized_from_commits: 0,
     /** Commit-bridge outcome: links written, rows re-attributed, cases left for review. */
     bridge_linked: 0,
     bridge_reattributed: 0,
@@ -109,6 +126,9 @@ export async function syncGitLab(
       stats.commits += counts.commits
       stats.deployments += counts.deployments
       stats.pipelines += counts.pipelines
+      stats.mrs_sized += counts.mrsSized
+      stats.mrs_with_paths += counts.mrsWithPaths
+      stats.commit_stat_calls += counts.commitStatCalls
       if (counts.completed) stats.projects_completed += 1
       else stats.ran_out_of_time = 1
       if (counts.backfillComplete) backfillDone += 1
@@ -126,6 +146,22 @@ export async function syncGitLab(
     }
 
     stats.unmatched_identities = await identities.flushUnmatched()
+
+    // Measure whatever history is still unmeasured, on leftover budget only. Merge
+    // requests come first: one GraphQL call gives a row its exact churn and its file
+    // paths, where the commit pass below costs a call per commit and yields no paths
+    // at all — so this is both the cheaper and the more valuable half.
+    try {
+      const mrSizes = await backfillMrSizes(ctx, client)
+      stats.mr_sizes_backfilled = mrSizes.measured
+      const sizes = await backfillChangeSizes(ctx, client)
+      stats.sizes_backfilled = sizes.commits
+      stats.mrs_resized_from_commits = sizes.mrs
+    } catch (error) {
+      // Sizes are an enrichment of rows that are already stored, so failing to
+      // measure them must not cost the slice everything else fetched.
+      ctx.log(`Size backfill failed: ${(error as Error).message}`)
+    }
 
     // Now that MRs exist, connect them to any Jira issues already synced.
     const { data: linked } = await ctx.db.rpc('link_mrs_to_issues')
@@ -165,6 +201,193 @@ export async function syncGitLab(
     await ctx.finish('error', stats, error)
     throw error
   }
+}
+
+/**
+ * Commit line-count fetches allowed per merge request when the listing did not
+ * supply them. Ten covers the 90th percentile here (eleven commits per MR), and the
+ * cap is what stops one two-hundred-commit branch from spending a whole run's budget
+ * on a single row while every other metric waits.
+ */
+const MR_COMMIT_STAT_LIMIT = 10
+
+/** Historical commits measured per run, once the walks have had their budget. */
+const SIZE_BACKFILL_LIMIT = 400
+
+/**
+ * Historical merge requests measured per run via GraphQL.
+ *
+ * Higher than the commit limit because it buys more per call: one request returns a
+ * merge request's exact churn *and* its file paths, where a commit costs a call and
+ * yields neither. Measuring this org's whole history costs ~2,000 calls this way
+ * against ~9,900 through commits.
+ */
+const MR_SIZE_BACKFILL_LIMIT = 300
+
+/**
+ * Give a historical merge request its size and its file paths.
+ *
+ * This is the pass that matters most, and it is separate from the commit backfill
+ * below for a reason that is easy to miss: commits carry line counts but no paths,
+ * so a merge request measured by summing its commits has churn and nothing else.
+ * Without paths there is no authored churn, which means a dependency bump in the
+ * history still scores 5.61 of 6.0 rather than 0.12 — the gaming the weight exists
+ * to stop, preserved in exactly the data the dashboard shows today.
+ *
+ * Queued on "no paths yet" rather than "no size yet", so rows the commit pass
+ * already sized are still upgraded from total churn to authored churn.
+ */
+async function backfillMrSizes(
+  ctx: SyncContext,
+  client: GitLabClient,
+): Promise<{ measured: number; attempted: number }> {
+  if (ctx.outOfTime) return { measured: 0, attempted: 0 }
+
+  const { data, error } = await ctx.db
+    .from('merge_requests')
+    .select('id, iid, size_source, gitlab_projects!inner(path_with_namespace)')
+    .is('churn_authored', null)
+    // `not.eq` alone would drop every never-measured row: size_source is NULL for
+    // those, NULL <> 'unavailable' is NULL, and PostgREST keeps only true. The
+    // majority of the queue would have been filtered out by the filter meant to
+    // protect it.
+    .or('size_source.is.null,size_source.neq.unavailable')
+    .order('merged_at', { ascending: false, nullsFirst: false })
+    .limit(MR_SIZE_BACKFILL_LIMIT)
+  if (error) {
+    ctx.log(`MR size backfill could not read its queue: ${error.message}`)
+    return { measured: 0, attempted: 0 }
+  }
+
+  const queue = (data ?? []) as unknown as {
+    id: string
+    iid: number
+    size_source: string | null
+    gitlab_projects: { path_with_namespace: string }
+  }[]
+
+  let measured = 0
+  let attempted = 0
+  for (const row of queue) {
+    if (ctx.outOfTime) break
+    attempted += 1
+    const graphql = await client.mergeRequestDiffStats(
+      row.gitlab_projects.path_with_namespace,
+      row.iid,
+    )
+    if (!graphql?.summary) {
+      // GraphQL had nothing. A row the commit pass already sized keeps that size —
+      // total churn is worse than authored churn but far better than nothing. A row
+      // with no size at all is marked unavailable so it stops heading the queue.
+      if (!row.size_source) {
+        await ctx.db
+          .from('merge_requests')
+          .update({ size_source: 'unavailable', size_measured_at: new Date().toISOString() })
+          .eq('id', row.id)
+      }
+      continue
+    }
+
+    const shape = shapeOfChange(graphql.files)
+    const { error: writeError } = await ctx.db
+      .from('merge_requests')
+      .update({
+        additions: graphql.summary.additions,
+        deletions: graphql.summary.deletions,
+        changed_files: graphql.summary.fileCount,
+        churn_authored: shape.churnAuthored,
+        files_authored: shape.filesAuthored,
+        modules_touched: shape.modules,
+        generated_pct: shape.generatedPct,
+        test_ratio: shape.testRatio,
+        size_source: 'graphql_diff_stats',
+        size_measured_at: new Date().toISOString(),
+      })
+      .eq('id', row.id)
+    if (writeError) {
+      ctx.log(`MR size backfill write failed for !${row.iid}: ${writeError.message}`)
+      break
+    }
+    measured += 1
+  }
+
+  if (attempted > 0) {
+    ctx.log(`MR size backfill: measured ${measured} of ${attempted} merge requests with file paths`)
+  }
+  return { measured, attempted }
+}
+
+/**
+ * Measure the size of history that was written before sizes were collected.
+ *
+ * This exists because the merge-request walk never comes back. It advances by
+ * `updated_at`, and a merge request that merged in March is never updated again, so
+ * without a separate pass the complexity metric would only ever cover work merged
+ * after this code shipped — useful in three months, useless now, and silently
+ * partial in the meantime.
+ *
+ * Runs last and only on whatever budget is left, so it can never delay the walks
+ * that keep every other metric current. Newest commits first, because a 90-day
+ * dashboard is what people actually look at. Resumable by construction: the queue is
+ * "rows where size_source is null", so each run simply shortens it.
+ */
+async function backfillChangeSizes(
+  ctx: SyncContext,
+  client: GitLabClient,
+): Promise<{ commits: number; mrs: number }> {
+  if (ctx.outOfTime) return { commits: 0, mrs: 0 }
+
+  const { data, error } = await ctx.db
+    .from('gitlab_commits')
+    .select('id, sha, project_id, gitlab_projects!inner(gitlab_id)')
+    .is('size_source', null)
+    .order('authored_at', { ascending: false })
+    .limit(SIZE_BACKFILL_LIMIT)
+  if (error) {
+    ctx.log(`Size backfill could not read its queue: ${error.message}`)
+    return { commits: 0, mrs: 0 }
+  }
+
+  const queue = (data ?? []) as unknown as {
+    id: string
+    sha: string
+    gitlab_projects: { gitlab_id: number }
+  }[]
+  if (queue.length === 0) return { commits: 0, mrs: 0 }
+
+  let measured = 0
+  for (const row of queue) {
+    if (ctx.outOfTime) break
+    const stats = await client.commitStats(row.gitlab_projects.gitlab_id, row.sha)
+    // A sha that no longer resolves — force-pushed away, or in a repository this
+    // token cannot read — is marked 'unavailable' rather than left null, otherwise
+    // it heads the queue forever and every run retries the same dead commits.
+    const { error: writeError } = await ctx.db
+      .from('gitlab_commits')
+      .update({
+        additions: stats?.additions ?? 0,
+        deletions: stats?.deletions ?? 0,
+        size_source: stats ? 'commit_api' : 'unavailable',
+        size_measured_at: new Date().toISOString(),
+      })
+      .eq('id', row.id)
+    if (writeError) {
+      ctx.log(`Size backfill write failed for ${row.sha.slice(0, 8)}: ${writeError.message}`)
+      break
+    }
+    if (stats) measured += 1
+  }
+
+  // Merge-request sizes are then derived from the commits that now have one. Done in
+  // SQL because it is a set operation over rows this loop did not necessarily touch:
+  // a merge request becomes measurable the moment its *last* unmeasured commit is.
+  const { data: resized, error: rpcError } = await ctx.db.rpc('resize_mrs_from_commits')
+  if (rpcError) ctx.log(`Deriving MR sizes from commits failed: ${rpcError.message}`)
+
+  ctx.log(
+    `Size backfill: measured ${measured} of ${queue.length} commits, derived ${resized ?? 0} merge-request sizes`,
+  )
+  return { commits: measured, mrs: (resized as number | null) ?? 0 }
 }
 
 interface TrackedProject {
@@ -313,6 +536,12 @@ async function syncProject(
     completed: false,
     backfillComplete: false,
     stoppedOnError: null as string | null,
+    /** Merge requests whose line counts were established this run. */
+    mrsSized: 0,
+    /** Extra API calls spent obtaining commit line counts. */
+    commitStatCalls: 0,
+    /** Merge requests whose file paths were obtained, so authored churn is known. */
+    mrsWithPaths: 0,
   }
 
   const mrCursorKey = `project:${project.gitlab_id}:merge_requests`
@@ -410,6 +639,51 @@ async function syncProject(
       ? commits.map((c) => c.authored_date).sort()[0]
       : null
 
+    // Line counts, if the commit listing did not already carry them. This is the
+    // only place a size can be established for a merge request, because a merged
+    // MR is never revisited by the walk — so skipping it here means the change is
+    // never measured. Capped per merge request and abandoned once the run is out
+    // of time; whatever is missed queues for the size backfill below.
+    const commitSizeSource = new Map<string, CommitSizeSource>()
+    for (const commit of commits) {
+      if (commit.stats) commitSizeSource.set(commit.id, 'list_stats')
+    }
+    if (!ctx.outOfTime) {
+      for (const commit of commitsNeedingStats(commits, MR_COMMIT_STAT_LIMIT)) {
+        if (ctx.outOfTime) break
+        const stats = await client.commitStats(project.gitlab_id, commit.id)
+        counts.commitStatCalls += 1
+        if (stats) {
+          commit.stats = stats
+          commitSizeSource.set(commit.id, 'commit_api')
+        } else {
+          commitSizeSource.set(commit.id, 'unavailable')
+        }
+      }
+    }
+
+    // GraphQL first: it is the only source that carries file paths, which is what
+    // lets a lockfile bump stop counting as five thousand lines of work. One call,
+    // no diff bodies. Falls back to the commit sums above when it answers nothing.
+    const graphql = await client.mergeRequestDiffStats(project.path_with_namespace, mr.iid)
+    const shape = graphql ? shapeOfChange(graphql.files) : null
+
+    const size = graphql?.summary
+      ? {
+          additions: graphql.summary.additions,
+          deletions: graphql.summary.deletions,
+          changedFiles: graphql.summary.fileCount,
+          source: 'graphql_diff_stats' as const,
+          churnKnown: true,
+        }
+      : resolveMrSize({
+          diffStats: mr.diff_stats,
+          changesCount: mr.changes_count,
+          commits,
+        })
+    if (size.churnKnown) counts.mrsSized += 1
+    if (shape) counts.mrsWithPaths += 1
+
     const approvals = await client.mergeRequestApprovals(project.gitlab_id, mr.iid)
 
     const { data: upserted, error } = await ctx.db
@@ -434,9 +708,21 @@ async function syncProject(
           merged_at: mr.merged_at,
           closed_at: mr.closed_at,
           first_commit_at: firstCommitAt,
-          additions: mr.diff_stats?.additions ?? 0,
-          deletions: mr.diff_stats?.deletions ?? 0,
-          changed_files: mr.diff_stats?.file_count ?? 0,
+          additions: size.additions,
+          deletions: size.deletions,
+          changed_files: size.changedFiles,
+          // Recorded so a zero can never again pass for a measurement: the views
+          // read churn as NULL unless the source says a line count was obtained.
+          size_source: size.source,
+          size_measured_at: new Date().toISOString(),
+          // Only set where paths were available. Left null otherwise, so the view
+          // knows to fall back to total churn rather than assuming nothing was
+          // generated.
+          churn_authored: shape?.churnAuthored ?? null,
+          files_authored: shape?.filesAuthored ?? null,
+          modules_touched: shape?.modules ?? null,
+          generated_pct: shape?.generatedPct ?? null,
+          test_ratio: shape?.testRatio ?? null,
           commits_count: commits.length,
           approvals_count: approvals?.approved_by?.length ?? 0,
           labels: mr.labels ?? [],
@@ -509,6 +795,8 @@ async function syncProject(
         committed_at: commit.committed_date,
         additions: commit.stats?.additions ?? 0,
         deletions: commit.stats?.deletions ?? 0,
+        size_source: commitSizeSource.get(commit.id) ?? null,
+        size_measured_at: commitSizeSource.has(commit.id) ? new Date().toISOString() : null,
         is_merge_commit: (commit.parent_ids?.length ?? 0) > 1,
       })
     }
