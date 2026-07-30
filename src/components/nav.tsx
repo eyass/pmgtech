@@ -6,14 +6,21 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { PERIODS, type PeriodKey } from '@/lib/queries'
 
 /**
- * Six entries. Five was the floor, reached by folding three pages into the one they
- * were a view of — squad comparison into the overview it sits below, sprints into
- * the delivery metrics they are part of, and the measurement framework into a
+ * Seven entries. Five was the floor, reached by folding three pages into the one
+ * they were a view of — squad comparison into the overview it sits below, sprints
+ * into the delivery metrics they are part of, and the measurement framework into a
  * reference linked from the pages that cite it instead of a top-level destination.
  * All three routes still resolve, so bookmarks and older links keep working.
  *
- * `/trust` earns the sixth against that rule rather than despite it, for two
- * reasons:
+ * Two have been added back, and each had to argue for itself against that floor.
+ *
+ * `/rankings` is the sixth. It is not a view of `/outliers` even though it shares
+ * its data: that page explains how the score is built and carries the auditable
+ * tables, while this one answers "who is where" in pictures. Folding them together
+ * is what made `/outliers` long enough to need splitting in the first place, and the
+ * tables stay there deliberately as the reachable-without-hover twin of every chart.
+ *
+ * `/trust` earns the seventh, for two reasons:
  *
  * - **It is not a view of any one page, so there is nothing to fold it into.** It
  *   is a view of every page — the attribution, freshness and confidence caveats
