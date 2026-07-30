@@ -6,13 +6,29 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { PERIODS, type PeriodKey } from '@/lib/queries'
 
 /**
- * Five entries, down from eight.
+ * Six entries. Five was the floor, reached by folding three pages into the one they
+ * were a view of — squad comparison into the overview it sits below, sprints into
+ * the delivery metrics they are part of, and the measurement framework into a
+ * reference linked from the pages that cite it instead of a top-level destination.
+ * All three routes still resolve, so bookmarks and older links keep working.
  *
- * Three pages were folded into the one they were a view of, rather than deleted —
- * squad comparison into the overview it sits below, sprints into the delivery
- * metrics they are part of, and the measurement framework into a reference linked
- * from the pages that cite it instead of a top-level destination. All three routes
- * still resolve, so bookmarks and older links keep working.
+ * `/trust` earns the sixth against that rule rather than despite it, for two
+ * reasons:
+ *
+ * - **It is not a view of any one page, so there is nothing to fold it into.** It
+ *   is a view of every page — the attribution, freshness and confidence caveats
+ *   that qualify the numbers on all five of the others. Putting it under one of
+ *   them would imply its answer only applies there.
+ * - **A link from the banners cannot carry it, because the banners hide when they
+ *   are clean.** The attribution banner disappears above 95%, the sync banner
+ *   disappears with no alerts. So on a good day there would be no route to the one
+ *   page that can say "today is a day you can quote these" — which is half of what
+ *   it is for. A page you need to reach *before* reading a number cannot be
+ *   reachable only from the warning that the number is wrong.
+ *
+ * The framework page is the near miss worth naming: it was demoted for being a
+ * reference, and this is not one. Its answer changes every day with the data, and
+ * it changes what a reader is allowed to say out loud.
  */
 const LINKS = [
   { href: '/', label: 'Overview' },
@@ -20,6 +36,7 @@ const LINKS = [
   { href: '/people', label: 'People' },
   { href: '/rankings', label: 'Rankings' },
   { href: '/outliers', label: 'Outliers' },
+  { href: '/trust', label: 'Trust' },
   { href: '/admin', label: 'Admin' },
 ]
 
