@@ -2,8 +2,10 @@ import type { ReactNode } from 'react'
 
 import { Card, Pill } from '@/components/ui'
 import { hours, nf, pct } from '@/lib/format'
+import { getTarget, rateAgainstTarget, type MetricTargetSet } from '@/lib/targets'
 import {
   BAND_LABEL,
+  METRIC_TARGET_DEFAULTS,
   SHAPE_MEANING,
   TEAM_TARGETS,
   type Band,
@@ -12,21 +14,23 @@ import {
   type TeamHealth,
 } from '@/lib/types/performance'
 
-/** Rate a team metric against its target. Teams only — never people. */
+type TeamMetricKey = keyof typeof TEAM_TARGETS
+
+/**
+ * Rate a team metric against its target. Teams only — never people.
+ *
+ * `targets` comes from `metric_targets` (0027) and is the live threshold set; the
+ * constants stay behind it as the fallback, so a page rendered while the table is
+ * unreachable still colours its numbers rather than going grey — grey would read as
+ * "no data" on a metric that has plenty.
+ */
 export function rateTeamMetric(
-  metric: keyof typeof TEAM_TARGETS,
+  metric: TeamMetricKey,
   value: number | null | undefined,
+  targets?: MetricTargetSet,
 ): 'good' | 'warn' | 'bad' | 'neutral' {
-  if (value === null || value === undefined) return 'neutral'
-  const t = TEAM_TARGETS[metric]
-  if (t.direction === 'higher-better') {
-    if (value >= t.good) return 'good'
-    if (value <= t.bad) return 'bad'
-    return 'warn'
-  }
-  if (value <= t.good) return 'good'
-  if (value >= t.bad) return 'bad'
-  return 'warn'
+  const target = targets ? getTarget(targets, metric) : METRIC_TARGET_DEFAULTS[metric]
+  return rateAgainstTarget(target, value)
 }
 
 const TONE_TEXT = {
@@ -43,14 +47,16 @@ export function TeamMetric({
   metric,
   raw,
   hint,
+  targets,
 }: {
   label: string
   value: string
-  metric?: keyof typeof TEAM_TARGETS
+  metric?: TeamMetricKey
   raw?: number | null
   hint?: string
+  targets?: MetricTargetSet
 }) {
-  const tone = metric ? rateTeamMetric(metric, raw) : 'neutral'
+  const tone = metric ? rateTeamMetric(metric, raw, targets) : 'neutral'
   return (
     <div className="flex items-baseline justify-between gap-3 border-b border-[var(--color-line)] py-1.5 last:border-0">
       <span className="text-xs text-[var(--color-muted)]" title={hint}>
@@ -87,7 +93,13 @@ export function DimensionCard({
 }
 
 /** All four dimensions for one squad. */
-export function TeamDimensions({ team }: { team: TeamHealth }) {
+export function TeamDimensions({
+  team,
+  targets,
+}: {
+  team: TeamHealth
+  targets?: MetricTargetSet
+}) {
   return (
     <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
       <DimensionCard
@@ -95,10 +107,10 @@ export function TeamDimensions({ team }: { team: TeamHealth }) {
         question="Does work move, or does it queue?"
         footnote="Flow efficiency is working time over elapsed time. Below 15% means the team spends most of its time waiting — on review, CI, or another team — which is a system problem, not an effort problem."
       >
-        <TeamMetric label="Lead time (median)" value={hours(team.median_cycle_hours)} metric="median_cycle_hours" raw={team.median_cycle_hours} />
+        <TeamMetric label="Lead time (median)" value={hours(team.median_cycle_hours)} metric="median_cycle_hours" raw={team.median_cycle_hours} targets={targets} />
         <TeamMetric label="Lead time (p75)" value={hours(team.p75_cycle_hours)} />
-        <TeamMetric label="Flow efficiency" value={pct(team.flow_efficiency_pct, 1)} metric="flow_efficiency_pct" raw={team.flow_efficiency_pct} />
-        <TeamMetric label="Deploys / week" value={nf(team.deploys_per_week, 1)} metric="deploys_per_week" raw={team.deploys_per_week} />
+        <TeamMetric label="Flow efficiency" value={pct(team.flow_efficiency_pct, 1)} metric="flow_efficiency_pct" raw={team.flow_efficiency_pct} targets={targets} />
+        <TeamMetric label="Deploys / week" value={nf(team.deploys_per_week, 1)} metric="deploys_per_week" raw={team.deploys_per_week} targets={targets} />
         <TeamMetric label="Batch size (median MR)" value={nf(team.median_mr_churn)} hint="Lines changed. Large batches slow review and raise defect risk." />
         <TeamMetric label="WIP per engineer" value={nf(team.wip_per_engineer, 2)} hint="Open merge requests divided by headcount." />
       </DimensionCard>
@@ -108,9 +120,9 @@ export function TeamDimensions({ team }: { team: TeamHealth }) {
         question="Does what we ship stay working?"
         footnote="Change failure rate counts only deployments that finished, so an in-flight deploy is never assumed successful. A squad doing the hardest work will read worse here than one doing routine work."
       >
-        <TeamMetric label="Change failure rate" value={pct(team.change_failure_pct, 1)} metric="change_failure_pct" raw={team.change_failure_pct} />
-        <TeamMetric label="Time to restore" value={hours(team.mttr_hours)} metric="mttr_hours" raw={team.mttr_hours} />
-        <TeamMetric label="Review coverage" value={pct(team.review_coverage_pct, 1)} metric="review_coverage_pct" raw={team.review_coverage_pct} />
+        <TeamMetric label="Change failure rate" value={pct(team.change_failure_pct, 1)} metric="change_failure_pct" raw={team.change_failure_pct} targets={targets} />
+        <TeamMetric label="Time to restore" value={hours(team.mttr_hours)} metric="mttr_hours" raw={team.mttr_hours} targets={targets} />
+        <TeamMetric label="Review coverage" value={pct(team.review_coverage_pct, 1)} metric="review_coverage_pct" raw={team.review_coverage_pct} targets={targets} />
         <TeamMetric label="Reverts" value={nf(team.reverts)} hint="Commits whose message starts with 'revert'. A prompt to look, not a verdict." />
         <TeamMetric label="Production bugs" value={nf(team.production_bugs)} hint="Bug or incident tickets labelled or prioritised as production-affecting." />
       </DimensionCard>
@@ -121,9 +133,9 @@ export function TeamDimensions({ team }: { team: TeamHealth }) {
         footnote="Review load Gini runs 0 (evenly shared) to 1 (one person carries everything). Above 0.6 usually means one or two people are the review bottleneck and a single point of failure."
       >
         <TeamMetric label="Reviews per eng / week" value={nf(team.reviews_per_engineer_week, 2)} />
-        <TeamMetric label="Review load Gini" value={team.review_gini === null ? '—' : nf(team.review_gini, 3)} metric="review_gini" raw={team.review_gini} />
-        <TeamMetric label="Cross-squad reviews" value={pct(team.cross_squad_review_pct, 1)} metric="cross_squad_review_pct" raw={team.cross_squad_review_pct} />
-        <TeamMetric label="Review response (median)" value={hours(team.median_review_response_hours)} metric="median_review_response_hours" raw={team.median_review_response_hours} />
+        <TeamMetric label="Review load Gini" value={team.review_gini === null ? '—' : nf(team.review_gini, 3)} metric="review_gini" raw={team.review_gini} targets={targets} />
+        <TeamMetric label="Cross-squad reviews" value={pct(team.cross_squad_review_pct, 1)} metric="cross_squad_review_pct" raw={team.cross_squad_review_pct} targets={targets} />
+        <TeamMetric label="Review response (median)" value={hours(team.median_review_response_hours)} metric="median_review_response_hours" raw={team.median_review_response_hours} targets={targets} />
         <TeamMetric label="Review depth (median)" value={team.median_review_depth_chars === null ? '—' : `${nf(team.median_review_depth_chars)} chars`} hint="Median comment length. Very low values suggest rubber-stamping rather than review." />
       </DimensionCard>
 
@@ -132,8 +144,8 @@ export function TeamDimensions({ team }: { team: TeamHealth }) {
         question="Was the work worth building?"
         footnote="Context only. Telemetry cannot see business value or judgement. Treat these as inputs to a conversation about direction, not as a score."
       >
-        <TeamMetric label="Unplanned work" value={pct(team.unplanned_work_pct, 1)} metric="unplanned_work_pct" raw={team.unplanned_work_pct} />
-        <TeamMetric label="Sprint completion" value={pct(team.sprint_completion_pct, 1)} metric="sprint_completion_pct" raw={team.sprint_completion_pct} />
+        <TeamMetric label="Unplanned work" value={pct(team.unplanned_work_pct, 1)} metric="unplanned_work_pct" raw={team.unplanned_work_pct} targets={targets} />
+        <TeamMetric label="Sprint completion" value={pct(team.sprint_completion_pct, 1)} metric="sprint_completion_pct" raw={team.sprint_completion_pct} targets={targets} />
         <TeamMetric label="Issues resolved" value={nf(team.issues_resolved)} />
         <TeamMetric label="Story points" value={nf(team.story_points)} />
       </DimensionCard>
