@@ -40,13 +40,24 @@
  * neither polygon reads as the heavier one, which is also why the charts never
  * rely on hue alone: slot A is a solid outline with round vertices, slot B a dashed
  * outline with diamond vertices, so the pair survives greyscale and a printout.
+ *
+ * `--chart-ref` draws the median and target reference lines, and it was too faint:
+ * #94a3b8 is only 2.56:1 on white, under the 3:1 floor. That line is not
+ * decoration — on the scatter it is the crosshair the quadrants are read from, so
+ * it has to be legible or the chart is not. Both slots are now well clear:
+ *
+ *   light  #64748b on #ffffff  = 4.79:1   (was #94a3b8 = 2.56:1)
+ *   dark   #7c8ba1 on #121a2e  = 4.93:1   (was #64748b = 3.59:1)
+ *
+ * It still sits below the ink and above the grid, so it stays recessive against the
+ * data without disappearing.
  */
 :root {
   --chart-series: #2a78d6;
   --chart-series-2: #b45309;
   --chart-grid: #e2e8f0;
   --chart-axis: #cbd5e1;
-  --chart-ref: #94a3b8;
+  --chart-ref: #64748b;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -55,7 +66,7 @@
     --chart-series-2: #d98a2b;
     --chart-grid: #223049;
     --chart-axis: #334155;
-    --chart-ref: #64748b;
+    --chart-ref: #7c8ba1;
   }
 }
 

@@ -18,6 +18,7 @@ const LINKS = [
   { href: '/', label: 'Overview' },
   { href: '/delivery', label: 'Delivery' },
   { href: '/people', label: 'People' },
+  { href: '/rankings', label: 'Rankings' },
   { href: '/outliers', label: 'Outliers' },
   { href: '/admin', label: 'Admin' },
 ]
