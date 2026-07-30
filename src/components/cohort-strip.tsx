@@ -3,6 +3,7 @@
 import { useState } from 'react'
 
 import { MEDIAN, scoreDomain, ticksIn } from '@/lib/chart-scale'
+import { MIN_COHORT } from '@/lib/trust'
 
 /**
  * How tightly each seniority cohort is bunched, and who sits outside their own.
@@ -119,7 +120,7 @@ export function CohortStrip({ cohorts }: { cohorts: Cohort[] }) {
         {cohorts.map((cohort, row) => {
           const cy = PAD.top + row * ROW_H + ROW_H / 2
           // A median needs somebody to be the middle of; below three there isn't one.
-          const thin = cohort.members.length < 3
+          const thin = cohort.members.length < MIN_COHORT
           return (
             <g key={cohort.key}>
               <line
