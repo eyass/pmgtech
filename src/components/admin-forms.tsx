@@ -1,10 +1,11 @@
 'use client'
 
-import { useActionState } from 'react'
+import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import type { ActionResult } from '@/app/admin/actions'
 import { groupEngineerOptions, shouldGroup, type EngineerOption } from '@/lib/engineer-options'
+import { validateTarget, type ResolvedTarget } from '@/lib/targets'
 
 /**
  * Thin client wrappers around the admin server actions.
@@ -140,6 +141,186 @@ export function ToggleButton({
       ))}
       <SubmitButton label={label} title={title} />
       <Status result={result} />
+    </form>
+  )
+}
+
+/**
+ * Edit one delivery target.
+ *
+ * The heaviest control on this screen, and the only one whose blast radius is every
+ * squad at once. `ToggleButton`'s confirm exists because ignoring a squad takes its
+ * people with it and nothing on the row says so; this is the same problem one level
+ * up — moving a threshold moves the score of squads that did not change, which is
+ * exactly the misreading the audit trail is there to prevent. So it gets the same
+ * friction, with the actual before-and-after in the prompt rather than a generic
+ * warning, and Save stays disabled until something is genuinely different.
+ *
+ * `direction` is displayed but not editable: whether lower cycle time is better is
+ * a fact about the metric. It rides along as a hidden field so the client-side
+ * check can refuse an inverted pair before the round trip, matching the constraint
+ * in migration 0027.
+ */
+export function MetricTargetForm({
+  action,
+  target,
+}: {
+  action: Action
+  target: ResolvedTarget
+}) {
+  const [result, formAction] = useAction(action)
+  const [good, setGood] = useState(String(target.good))
+  const [bad, setBad] = useState(String(target.bad))
+  const [weight, setWeight] = useState(target.weight === null ? '' : String(target.weight))
+  const [refusal, setRefusal] = useState<string | null>(null)
+
+  const scored = target.dimension !== null
+  const changed =
+    Number(good) !== target.good ||
+    Number(bad) !== target.bad ||
+    (scored && Number(weight) !== target.weight)
+
+  const number =
+    'tnum w-20 rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs'
+
+  return (
+    <form
+      action={formAction}
+      onSubmit={(event) => {
+        const check = validateTarget({
+          direction: target.direction,
+          good: Number(good),
+          bad: Number(bad),
+          label: target.label,
+        })
+        if (!check.ok) {
+          setRefusal(check.message)
+          event.preventDefault()
+          return
+        }
+        setRefusal(null)
+        // Only what actually moved. "bad 1 \u2192 1" in a confirmation dialog is noise, and
+        // noise in a confirmation is how people learn to click through them.
+        const lines = [
+          `Move the target for ${target.label}?`,
+          '',
+          Number(good) !== target.good ? `good ${target.good} \u2192 ${Number(good)}` : '',
+          Number(bad) !== target.bad ? `bad ${target.bad} \u2192 ${Number(bad)}` : '',
+          scored && Number(weight) !== target.weight
+            ? `weight ${target.weight} \u2192 ${Number(weight)}`
+            : '',
+          '',
+          scored
+            ? 'Every squad is scored against this threshold, so every squad\u2019s score moves \u2014 including squads that have not changed at all.'
+            : 'This colours the metric on the team pages for every squad.',
+          'The edit is recorded against your email in the change history below, which is what will tell this apart from a squad getting worse.',
+        ].filter(Boolean)
+        if (!window.confirm(lines.join('\n'))) event.preventDefault()
+      }}
+      className="grid items-start gap-x-4 gap-y-2 border-b border-[var(--color-line)] py-3 last:border-0 md:grid-cols-[minmax(0,1fr)_auto]"
+    >
+      <input type="hidden" name="metricKey" value={target.key} />
+      <input type="hidden" name="label" value={target.label} />
+      <input type="hidden" name="direction" value={target.direction} />
+      <input type="hidden" name="scored" value={String(scored)} />
+
+      <div>
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="text-sm font-medium">{target.label}</span>
+          <span className="font-mono text-[10px] text-[var(--color-muted)]">{target.key}</span>
+          {target.source === 'fallback' ? (
+            <span
+              className="text-[10px] font-medium text-amber-600 dark:text-amber-400"
+              title="No usable row in metric_targets, so the built-in default is what the app is scoring against."
+            >
+              built-in default
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-0.5 text-[11px] text-[var(--color-muted)]">
+          {target.direction === 'higher-better' ? 'Higher is better' : 'Lower is better'}
+          {scored ? ` \u00b7 feeds ${target.dimension}` : ' \u00b7 not in the score'}
+          {' \u00b7 '}
+          {target.updatedBy
+            ? `moved by ${target.updatedBy}${
+                target.updatedAt ? ` on ${target.updatedAt.slice(0, 10)}` : ''
+              }`
+            : 'never edited'}
+        </p>
+        {target.rationale ? (
+          <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-[var(--color-muted)]">
+            {target.rationale}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]" title="Scores 100">
+            good
+          </span>
+          <input
+            name="good"
+            type="number"
+            step="any"
+            required
+            value={good}
+            onChange={(event) => setGood(event.currentTarget.value)}
+            aria-label={`${target.label}: the value that scores 100`}
+            className={number}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]" title="Scores 0">
+            bad
+          </span>
+          <input
+            name="bad"
+            type="number"
+            step="any"
+            required
+            value={bad}
+            onChange={(event) => setBad(event.currentTarget.value)}
+            aria-label={`${target.label}: the value that scores 0`}
+            className={number}
+          />
+        </label>
+        {scored ? (
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-[var(--color-muted)]">weight</span>
+            <input
+              name="weight"
+              type="number"
+              step="any"
+              min="0.1"
+              required
+              value={weight}
+              onChange={(event) => setWeight(event.currentTarget.value)}
+              aria-label={`${target.label}: weight within its dimension`}
+              className={number}
+            />
+          </label>
+        ) : null}
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-[var(--color-muted)]">Why (recorded)</span>
+          <input
+            name="note"
+            placeholder="The most useful thing here in six months"
+            aria-label={`${target.label}: reason for the change`}
+            className="w-64 rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+          />
+        </label>
+        <SubmitButton
+          label="Save"
+          title={changed ? 'Moves every squad\u2019s score' : 'Nothing has changed yet'}
+          disabled={!changed}
+        />
+      </div>
+
+      {/* Full width, so a long refusal wraps under the row instead of squeezing the inputs. */}
+      <div className="text-xs md:col-span-2">
+        {refusal ? <span className="text-red-600">{refusal}</span> : <Status result={result} />}
+      </div>
     </form>
   )
 }
@@ -336,12 +517,20 @@ export function CreateEngineerForm({
   )
 }
 
-function SubmitButton({ label, title }: { label: string; title?: string }) {
+function SubmitButton({
+  label,
+  title,
+  disabled,
+}: {
+  label: string
+  title?: string
+  disabled?: boolean
+}) {
   const { pending } = useFormStatus()
   return (
     <button
       type="submit"
-      disabled={pending}
+      disabled={pending || disabled}
       title={title}
       className="rounded-md border border-[var(--color-line)] px-2 py-1 text-xs transition-colors hover:bg-[var(--color-line)] disabled:opacity-50"
     >

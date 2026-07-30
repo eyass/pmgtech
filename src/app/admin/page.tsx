@@ -10,6 +10,7 @@ import {
   ToggleButton,
 } from '@/components/admin-forms'
 import { SyncAlertBanner } from '@/components/coverage'
+import { DeliveryTargetsSection } from '@/components/sections/delivery-targets'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { currentUser } from '@/lib/auth'
 import { integrationStatus } from '@/lib/env'
@@ -18,6 +19,8 @@ import {
   getEngineersForAdmin,
   getGitLabProjects,
   getJiraBoards,
+  getMetricTargetHistory,
+  getMetricTargets,
   getSquadsForAdmin,
   getBridgeSuggestions,
   getSquadSuggestions,
@@ -38,6 +41,7 @@ import {
   setBoardSquad,
   setEngineerSeniority,
   setEngineerSquad,
+  setMetricTarget,
   setProjectSquad,
   toggleEngineerIgnored,
   toggleEngineerMetrics,
@@ -62,6 +66,7 @@ export default async function AdminPage() {
     bridge,
     squadHints,
     syncAlerts,
+    targetSet,
   ] = await Promise.all([
     // The admin variants include ignored rows. This is the one screen that shows
     // them, because it is where they are restored.
@@ -75,7 +80,12 @@ export default async function AdminPage() {
     getBridgeSuggestions(),
     getSquadSuggestions(),
     getSyncAlerts(),
+    getMetricTargets(),
   ])
+
+  // Read after the targets rather than beside them: a change row is labelled with the
+  // metric's current label, and the point of the trail is that the two agree.
+  const targetHistory = await getMetricTargetHistory(targetSet.targets)
 
   const status = integrationStatus()
   // Nothing gets assigned or linked to an ignored row — the result would be invisible
@@ -479,6 +489,15 @@ export default async function AdminPage() {
           })}
         </Table>
       </section>
+
+      {/* --- delivery targets ------------------------------------------------- */}
+
+      <DeliveryTargetsSection
+        targetSet={targetSet}
+        history={targetHistory}
+        readOnly={readOnly}
+        action={setMetricTarget}
+      />
 
       {/* --- engineers -------------------------------------------------------- */}
 

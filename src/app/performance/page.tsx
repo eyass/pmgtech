@@ -6,6 +6,7 @@ import { nf, pct } from '@/lib/format'
 import {
   getEngineerProfiles,
   getKnowledgeConcentration,
+  getMetricTargets,
   getPerformanceDimensions,
   getTeamHealth,
   PERIODS,
@@ -24,11 +25,14 @@ export default async function PerformancePage({
   const { period } = await searchParams
   const { key, range } = resolvePeriod(period)
 
-  const [dimensions, teams, profiles, concentration] = await Promise.all([
+  const [dimensions, teams, profiles, concentration, targetSet] = await Promise.all([
     getPerformanceDimensions(),
     getTeamHealth(range),
     getEngineerProfiles(range),
     getKnowledgeConcentration(range),
+    // The thresholds these numbers are coloured against are rows now, editable on
+    // /admin. The constants in lib/types/performance.ts are the fallback behind them.
+    getMetricTargets(),
   ])
 
   const shapes = profiles.reduce<Record<string, number>>((acc, p) => {
@@ -117,6 +121,11 @@ export default async function PerformancePage({
         <SectionHeading
           title="Team level"
           hint="One block per dimension, per squad. Colour is against an absolute target — the only place in the app where that happens, and it applies to squads, never to people."
+          action={
+            <Link href="/admin#targets" className="text-xs text-[var(--color-muted)] underline">
+              {targetSet.usingFallback ? 'Targets unavailable — using defaults' : 'Edit the targets'}
+            </Link>
+          }
         />
         <div className="space-y-6">
           {teams.map((team) => (
@@ -131,7 +140,7 @@ export default async function PerformancePage({
                   {nf(team.headcount)} engineers
                 </span>
               </div>
-              <TeamDimensions team={team} />
+              <TeamDimensions team={team} targets={targetSet.targets} />
             </div>
           ))}
         </div>

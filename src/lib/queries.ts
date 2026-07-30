@@ -1,6 +1,15 @@
 import { supabaseAdmin } from '@/lib/supabase/admin'
 import { loadBridgeCandidates, type BridgeRow } from '@/lib/sync/bridge'
 import {
+  describeTargetChange,
+  resolveMetricTargets,
+  type MetricTargetChangeRow,
+  type MetricTargetResolution,
+  type MetricTargetRow,
+  type MetricTargetSet,
+  type TargetChange,
+} from '@/lib/targets'
+import {
   readSourceHealth,
   type SourceHealth,
   type SyncAlert,
@@ -466,5 +475,53 @@ export async function getDataFreshness() {
     issues: issues.count ?? 0,
     hasAnyData: (engineers.count ?? 0) > 0 || (mrs.count ?? 0) > 0 || (issues.count ?? 0) > 0,
     lastRun: (lastRun.data as { source: string; status: string; finished_at: string | null } | null) ?? null,
+  }
+}
+
+// --- delivery targets (0027_configurable_targets.sql) ------------------------
+
+/**
+ * The thresholds every squad metric is scored and coloured against.
+ *
+ * Deliberately does not throw. Every other read here fails loudly, because a page
+ * with no data is better than a page with wrong data — but a target is not data,
+ * it is the yardstick, and the yardstick has a defensible default sitting in code.
+ * Falling back to it and saying so beats failing the whole page, and it is also
+ * what keeps a missing row from reading as a zero: see `resolveMetricTargets`.
+ */
+export async function getMetricTargets(): Promise<MetricTargetResolution> {
+  const { data, error } = await supabaseAdmin()
+    .from('metric_targets')
+    .select(
+      'metric_key, label, good, bad, direction, score_dimension, score_weight, rationale, sort_order, updated_at, updated_by',
+    )
+    .order('sort_order')
+  if (error) return resolveMetricTargets(null, error.message)
+  return resolveMetricTargets((data ?? []) as MetricTargetRow[])
+}
+
+/**
+ * The audit trail, newest first, already turned into readable changes.
+ *
+ * Same tolerance as above: an unreadable history is a gap in an explanation, not a
+ * reason for the admin screen to 500.
+ */
+export async function getMetricTargetHistory(
+  targets: MetricTargetSet,
+  limit = 40,
+): Promise<{ changes: TargetChange[]; error: string | null }> {
+  const { data, error } = await supabaseAdmin()
+    .from('metric_target_changes')
+    .select(
+      'id, metric_key, changed_by, changed_at, old_good, old_bad, new_good, new_bad, old_weight, new_weight, direction, note',
+    )
+    .order('changed_at', { ascending: false })
+    .limit(limit)
+  if (error) return { changes: [], error: error.message }
+  return {
+    changes: ((data ?? []) as MetricTargetChangeRow[]).map((row) =>
+      describeTargetChange(row, targets),
+    ),
+    error: null,
   }
 }

@@ -132,6 +132,16 @@ export interface AssessmentSummaryRow {
  * judged against an absolute number, and they apply to squads, never to people.
  * Loosely calibrated on DORA's published performance bands; tune them to what
  * good looks like here rather than treating them as universal truth.
+ *
+ * **No longer the source of truth.** Since `0027_configurable_targets.sql` the
+ * live thresholds are rows in `metric_targets`, editable from the admin screen
+ * without a deploy, and `metric_targets` was seeded from exactly the numbers
+ * below. What this block is now is the *fallback*: the values used when the table
+ * cannot be reached or has no row for a key. It is deliberately kept in code
+ * rather than reduced to a comment, because the alternative fallback — zero, or
+ * nothing — would either make every squad look terrible or make a page fail to
+ * render, and both of those are worse than a slightly stale target. See
+ * `src/lib/targets.ts` for how a stored row and this fallback are merged.
  */
 export const TEAM_TARGETS = {
   deploys_per_week: { good: 5, bad: 1, direction: 'higher-better' as const },
@@ -296,6 +306,9 @@ export interface SquadOutlier {
  * number was scored against. Six of these thresholds are the team targets above;
  * `mrs_per_engineer_week` and `reviews_per_engineer_week` are set from this org's
  * own spread and are the two most arguable numbers in the scoring.
+ *
+ * Fallback, on the same terms as TEAM_TARGETS above: `metric_targets` was seeded
+ * from these numbers in 0027 and is what the score is read against now.
  */
 export const SQUAD_SCORE_RUBRIC = {
   throughput: {
@@ -324,6 +337,110 @@ export const SQUAD_SCORE_RUBRIC = {
     ],
   },
 } as const
+
+/** Which of the four squad dimensions a scored metric feeds. */
+export type SquadScoreDimension = keyof typeof SQUAD_SCORE_RUBRIC
+
+/** Which way is better. A fact about the metric, not a policy choice. */
+export type MetricDirection = 'higher-better' | 'lower-better'
+
+type SquadRubricMetric = (typeof SQUAD_SCORE_RUBRIC)[SquadScoreDimension]['metrics'][number]
+
+/**
+ * Every metric with an absolute target: the eleven team targets, plus the two
+ * per-engineer rates that only ever existed inside the squad rubric.
+ */
+export type MetricTargetKey = keyof typeof TEAM_TARGETS | SquadRubricMetric['key']
+
+/** A threshold pair and the direction that says which end is which. */
+export interface MetricTarget {
+  good: number
+  bad: number
+  direction: MetricDirection
+}
+
+/** A target plus everything the admin screen and the squad score need to know about it. */
+export interface MetricTargetDefault extends MetricTarget {
+  key: MetricTargetKey
+  label: string
+  /** Null for the six that only colour a number on the team pages. */
+  dimension: SquadScoreDimension | null
+  /** Relative weight inside that dimension. Null when `dimension` is. */
+  weight: number | null
+  sortOrder: number
+}
+
+/**
+ * Display order, scored metrics first and grouped by dimension. Mirrors
+ * `metric_targets.sort_order` in 0027 so the admin screen reads the same way
+ * whether it is rendering stored rows or this fallback.
+ */
+const METRIC_TARGET_ORDER: readonly MetricTargetKey[] = [
+  'mrs_per_engineer_week',
+  'deploys_per_week',
+  'median_cycle_hours',
+  'change_failure_pct',
+  'mttr_hours',
+  'review_coverage_pct',
+  'reviews_per_engineer_week',
+  'flow_efficiency_pct',
+  'median_review_response_hours',
+  'review_gini',
+  'cross_squad_review_pct',
+  'sprint_completion_pct',
+  'unplanned_work_pct',
+]
+
+/** Labels for the six that are not in the squad rubric and so have none there. */
+const TEAM_ONLY_LABELS: Record<string, string> = {
+  flow_efficiency_pct: 'Flow efficiency',
+  median_review_response_hours: 'Review response time (median hours)',
+  review_gini: 'Review load Gini',
+  cross_squad_review_pct: 'Cross-squad reviews',
+  sprint_completion_pct: 'Sprint completion',
+  unplanned_work_pct: 'Unplanned work',
+}
+
+/**
+ * The fallback target set, assembled from the two blocks above rather than
+ * restated — a third copy of thirteen numbers is a third chance to disagree with
+ * itself. Where a key appears in both, the squad rubric wins on label, weight and
+ * dimension, and `test/targets.test.ts` pins that the two agree on the numbers.
+ *
+ * Runtime reads should go through `resolveMetricTargets` in `src/lib/targets.ts`,
+ * which layers the stored rows from `metric_targets` over this.
+ */
+export const METRIC_TARGET_DEFAULTS: Record<MetricTargetKey, MetricTargetDefault> = (() => {
+  const scored = new Map<string, { dimension: SquadScoreDimension; metric: SquadRubricMetric }>()
+  for (const [dimension, block] of Object.entries(SQUAD_SCORE_RUBRIC) as [
+    SquadScoreDimension,
+    (typeof SQUAD_SCORE_RUBRIC)[SquadScoreDimension],
+  ][]) {
+    for (const metric of block.metrics) scored.set(metric.key, { dimension, metric })
+  }
+
+  const out = {} as Record<MetricTargetKey, MetricTargetDefault>
+  METRIC_TARGET_ORDER.forEach((key, index) => {
+    const team = (TEAM_TARGETS as Record<string, MetricTarget | undefined>)[key]
+    const hit = scored.get(key)
+    // Direction comes from TEAM_TARGETS where it is stated, and from which side of
+    // `bad` the `good` value sits on for the two squad-only rates. Both agree for
+    // the six keys that appear in both blocks.
+    const good = hit ? hit.metric.good : team!.good
+    const bad = hit ? hit.metric.bad : team!.bad
+    out[key] = {
+      key,
+      label: hit ? hit.metric.label : (TEAM_ONLY_LABELS[key] ?? key),
+      good,
+      bad,
+      direction: team ? team.direction : good > bad ? 'higher-better' : 'lower-better',
+      dimension: hit ? hit.dimension : null,
+      weight: hit ? hit.metric.weight : null,
+      sortOrder: (index + 1) * 10,
+    }
+  })
+  return out
+})()
 
 /** What each engineer dimension is built from, for the same reason. */
 export const ENGINEER_SCORE_RUBRIC = {
