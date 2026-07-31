@@ -4,10 +4,13 @@ import { describe, it } from 'node:test'
 import {
   orgWithholdings,
   readAttribution,
+  readCron,
   readScored,
   readSourceHealth,
   readVerdict,
+  readWindowCoverage,
   type SourceHealth,
+  type StreamFrontier,
   type SyncRunFacts,
 } from '../src/lib/trust.ts'
 import type { OrgKpis } from '../src/lib/types/metrics.ts'
@@ -117,10 +120,17 @@ function forSource(health: SourceHealth[], source: string): SourceHealth {
 
 describe('readSourceHealth', () => {
   it('says nothing about a source with no finished run, rather than calling it healthy', () => {
-    const health = readSourceHealth([run({ source: 'gitlab', status: 'running' })], NOW)
+    // Started four minutes ago, so it is genuinely in flight rather than abandoned —
+    // the distinction STALE_RUN_AFTER_MS draws, and the reason this run is dated
+    // relative to NOW rather than using the hour-old default.
+    const health = readSourceHealth(
+      [run({ source: 'gitlab', status: 'running', started_at: '2026-07-30T11:56:00Z' })],
+      NOW,
+    )
     const gitlab = forSource(health, 'gitlab')
     assert.equal(gitlab.observed, false)
     assert.equal(gitlab.running, true)
+    assert.equal(gitlab.abandonedRuns, 0)
     assert.equal(gitlab.level, 'unknown')
     assert.deepEqual(gitlab.alerts, [])
   })
@@ -490,5 +500,276 @@ describe('readVerdict', () => {
     assert.ok(clause)
     assert.equal(clause.level, 'unknown')
     assert.match(clause.text, /unknown/)
+  })
+})
+
+// --- runs that never reported a result ----------------------------------------
+
+/**
+ * The state-machine fact this section pins: `running` is a claim with a shelf life.
+ *
+ * Production held four gitlab rows saying `running` for three days, and reading them
+ * as "a run is in flight" is what let a scheduler that had stopped firing altogether
+ * present as a sync mid-work. A row cannot be believed past the longest invocation
+ * that could have written it.
+ */
+describe('readSourceHealth, on runs that never reported a result', () => {
+  it('stops calling a long-open run in flight and raises it as bad', () => {
+    const health = readSourceHealth(
+      [
+        run({ source: 'gitlab', status: 'running', started_at: '2026-07-27T22:43:00Z' }),
+        run({
+          source: 'gitlab',
+          status: 'success',
+          started_at: '2026-07-27T22:37:00Z',
+          finished_at: '2026-07-27T22:43:00Z',
+        }),
+      ],
+      NOW,
+    )
+    const gitlab = forSource(health, 'gitlab')
+    assert.equal(gitlab.running, false)
+    assert.equal(gitlab.abandonedRuns, 1)
+    assert.equal(gitlab.oldestAbandonedAt, '2026-07-27T22:43:00Z')
+    assert.equal(gitlab.level, 'bad')
+    assert.ok(gitlab.alerts.some((a) => /never reported a result/.test(a.message)))
+  })
+
+  it('counts several and dates the oldest, which is how long nothing has been running', () => {
+    const health = readSourceHealth(
+      [
+        run({ source: 'gitlab', status: 'running', started_at: '2026-07-27T22:43:00Z' }),
+        run({ source: 'gitlab', status: 'running', started_at: '2026-07-27T19:30:00Z' }),
+        run({ source: 'gitlab', status: 'running', started_at: '2026-07-27T16:26:00Z' }),
+      ],
+      NOW,
+    )
+    const gitlab = forSource(health, 'gitlab')
+    assert.equal(gitlab.abandonedRuns, 3)
+    assert.equal(gitlab.oldestAbandonedAt, '2026-07-27T16:26:00Z')
+    assert.match(gitlab.alerts[0].message, /3 runs never reported a result/)
+    // Still unobserved — no run of this source has ever finished — but the level is
+    // bad, because three dead rows is a statement in itself.
+    assert.equal(gitlab.observed, false)
+    assert.equal(gitlab.level, 'bad')
+  })
+
+  it('keeps a genuinely slow run in flight, so a live sync is never libelled', () => {
+    const health = readSourceHealth(
+      [run({ source: 'jira', status: 'running', started_at: '2026-07-30T11:45:00Z' })],
+      NOW,
+    )
+    const jira = forSource(health, 'jira')
+    assert.equal(jira.running, true)
+    assert.equal(jira.abandonedRuns, 0)
+    assert.deepEqual(jira.alerts, [])
+  })
+
+  it('reports an abandoned run alongside a failed one rather than instead of it', () => {
+    const health = readSourceHealth(
+      [
+        run({ source: 'hibob', status: 'running', started_at: '2026-07-27T16:26:00Z' }),
+        run({ source: 'hibob', status: 'error', started_at: '2026-07-30T11:00:00Z' }),
+      ],
+      NOW,
+    )
+    const hibob = forSource(health, 'hibob')
+    assert.equal(hibob.abandonedRuns, 1)
+    assert.equal(hibob.alerts.length, 2)
+    assert.equal(hibob.alerts[0].message, 'the last run failed')
+    assert.match(hibob.alerts[1].message, /never reported a result/)
+  })
+})
+
+// --- how deep the collection goes ---------------------------------------------
+
+/**
+ * The gap that looks like a finding.
+ *
+ * On 2026-07-31 the GitLab backward walk had reached 2026-04-29 and stopped, so the
+ * 12-month selector served three months of merge-request history under a twelve-month
+ * label — and the missing nine months read as months when the team shipped less. These
+ * cases pin the arithmetic that says so, and the two things it must refuse to do:
+ * treat an unmeasured depth as covered, and treat "the backfill finished" as covering
+ * whatever period the reader happened to select.
+ */
+const WINDOW_NOW = Date.parse('2026-07-31T00:00:00Z')
+
+function frontier(over: Partial<StreamFrontier> = {}): StreamFrontier {
+  return {
+    label: 'Merge requests',
+    source: 'gitlab',
+    reachedBackTo: '2026-04-29T06:32:51.940Z',
+    complete: false,
+    configuredWindowStart: '2025-07-31T00:00:00Z',
+    earliestRecordAt: '2021-04-09T00:00:00Z',
+    rowsInWindow: 1472,
+    consequence: 'Throughput is counted over a shorter span than the period claims.',
+    ...over,
+  }
+}
+
+function windowOf(days: number) {
+  return { from: new Date(WINDOW_NOW - days * 86_400_000), to: new Date(WINDOW_NOW) }
+}
+
+describe('readWindowCoverage', () => {
+  it('calls the 90-day window covered, because the walk reached past its start', () => {
+    const [mrs] = readWindowCoverage([frontier()], windowOf(90), WINDOW_NOW)
+    assert.equal(mrs.coveredPct, 100)
+    assert.equal(mrs.level, 'ok')
+  })
+
+  it('calls the 12-month window a quarter collected, which is what production held', () => {
+    const [mrs] = readWindowCoverage([frontier()], windowOf(365), WINDOW_NOW)
+    assert.ok(mrs.coveredPct !== null)
+    // 2026-04-29 to 2026-07-31 is 93 days of a 365-day window.
+    assert.equal(mrs.coveredDays, 93)
+    assert.equal(mrs.windowDays, 365)
+    assert.equal(Math.round(mrs.coveredPct), 25)
+    assert.equal(mrs.level, 'bad')
+  })
+
+  it('is unknown, not zero, for a stream nothing has walked backwards', () => {
+    const [mrs] = readWindowCoverage([frontier({ reachedBackTo: null })], windowOf(365), WINDOW_NOW)
+    assert.equal(mrs.coveredPct, null)
+    assert.equal(mrs.coveredDays, null)
+    assert.equal(mrs.level, 'unknown')
+  })
+
+  it('does not let an old row stand in for depth the walk never reached', () => {
+    // The oldest row held is 2021, five years deep, and it changes nothing: it arrived
+    // through the forward walk's updated-at window, not because 2021 was collected.
+    const [mrs] = readWindowCoverage(
+      [frontier({ earliestRecordAt: '2021-04-09T00:00:00Z' })],
+      windowOf(365),
+      WINDOW_NOW,
+    )
+    assert.equal(Math.round(mrs.coveredPct!), 25)
+  })
+
+  it('reads a finished backfill as covering its configured window, and no further', () => {
+    const complete = frontier({ complete: true, reachedBackTo: null })
+    assert.equal(readWindowCoverage([complete], windowOf(365), WINDOW_NOW)[0].coveredPct, 100)
+
+    // Two years of window against a twelve-month backfill is half collected, however
+    // finished that backfill is. Taking 'complete' to mean 100% would put the
+    // assumption back in a new place.
+    const twoYears = readWindowCoverage([complete], windowOf(730), WINDOW_NOW)[0]
+    assert.equal(Math.round(twoYears.coveredPct!), 50)
+    assert.equal(twoYears.level, 'bad')
+  })
+
+  it('measures each stream separately, because the walks do not travel together', () => {
+    const rows = readWindowCoverage(
+      [
+        frontier({ label: 'Merge requests', reachedBackTo: '2026-04-29T06:32:51.940Z' }),
+        frontier({ label: 'Production deployments', reachedBackTo: '2026-06-10T09:09:57.475Z' }),
+      ],
+      windowOf(365),
+      WINDOW_NOW,
+    )
+    assert.equal(Math.round(rows[0].coveredPct!), 25)
+    assert.equal(Math.round(rows[1].coveredPct!), 14)
+    assert.ok(rows[1].coveredPct! < rows[0].coveredPct!)
+  })
+})
+
+describe('readCron', () => {
+  it('calls an unset secret bad, because nothing will refresh without it', () => {
+    assert.equal(readCron({ configured: false, missing: ['CRON_SECRET'], schedules: [] }).level, 'bad')
+  })
+
+  it('calls a configured secret ok', () => {
+    assert.equal(readCron({ configured: true, missing: [], schedules: [] }).level, 'ok')
+  })
+})
+
+describe('readVerdict, on collection depth and the scheduler', () => {
+  const healthy = readSourceHealth(
+    [run({ source: 'all', status: 'success', finished_at: new Date(NOW - HOUR).toISOString() })],
+    NOW,
+  )
+  const base = {
+    attribution: readAttribution({
+      ...KPIS,
+      mr_attribution_pct: 99.5,
+      commit_attribution_pct: 99.1,
+    }),
+    sources: healthy,
+    withholdings: [],
+    scored: readScored([outlier({})]),
+    people: { directory: 14, inMetrics: 14 },
+  }
+
+  it('blocks on a short window and says which view is short', () => {
+    const verdict = readVerdict({
+      ...base,
+      windows: {
+        label: 'Last 12 months',
+        coverage: readWindowCoverage([frontier()], windowOf(365), WINDOW_NOW),
+      },
+    })
+    assert.equal(verdict.level, 'blocked')
+    const clause = verdict.clauses.find((c) => c.section === 'depth')
+    assert.ok(clause)
+    assert.match(clause.text, /Last 12 months/)
+    assert.match(clause.text, /93 of 365 days/)
+    assert.match(clause.text, /quiet ones/)
+  })
+
+  it('says nothing about depth for a window that was fully collected', () => {
+    const verdict = readVerdict({
+      ...base,
+      windows: {
+        label: 'Last 90 days',
+        coverage: readWindowCoverage([frontier()], windowOf(90), WINDOW_NOW),
+      },
+    })
+    assert.equal(verdict.clauses.filter((c) => c.section === 'depth').length, 0)
+    assert.equal(verdict.level, 'clear')
+  })
+
+  it('stays silent on depth when no coverage was passed, rather than assuming it', () => {
+    const verdict = readVerdict(base)
+    assert.equal(verdict.clauses.filter((c) => c.section === 'depth').length, 0)
+  })
+
+  it('puts the unset cron secret ahead of the staleness it causes', () => {
+    const stale = readSourceHealth(
+      [
+        run({
+          source: 'all',
+          status: 'success',
+          started_at: new Date(NOW - 80 * HOUR).toISOString(),
+          finished_at: new Date(NOW - 80 * HOUR).toISOString(),
+        }),
+      ],
+      NOW,
+    )
+    const verdict = readVerdict({
+      ...base,
+      sources: stale,
+      cron: readCron({
+        configured: false,
+        missing: ['CRON_SECRET'],
+        schedules: [{ path: '/api/sync', schedule: '0 3 * * *', what: 'pulls everything' }],
+      }),
+    })
+    assert.equal(verdict.level, 'blocked')
+    // The cause, not the symptom, is what the headline quotes.
+    assert.match(verdict.clauses[0].text, /cannot authenticate/)
+    assert.match(verdict.clauses[0].text, /CRON_SECRET/)
+    assert.match(verdict.headline, /cannot authenticate/)
+    // And the staleness it produces is still listed underneath it.
+    assert.ok(verdict.clauses.slice(1).some((c) => /hours ago/.test(c.text)))
+  })
+
+  it('says nothing about the scheduler when its secret is set', () => {
+    const verdict = readVerdict({
+      ...base,
+      cron: readCron({ configured: true, missing: [], schedules: [] }),
+    })
+    assert.equal(verdict.level, 'clear')
   })
 })

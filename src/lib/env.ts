@@ -95,6 +95,48 @@ export const appEnv = () => ({
         : 'http://localhost:3000'),
 })
 
+/**
+ * The cron schedules in `vercel.json`, named here because a JSON file cannot hold a
+ * comment and because `cronStatus` has to be able to say what is not running.
+ */
+export const CRON_SCHEDULES = [
+  { path: '/api/sync', schedule: '0 3 * * *', what: 'pulls GitLab, Jira and HiBob' },
+  { path: '/api/snapshots', schedule: '0 6 * * *', what: 'records the day’s scores' },
+] as const
+
+/**
+ * Whether the scheduled runs can authenticate themselves at all.
+ *
+ * Kept apart from `integrationStatus` because it is a different kind of missing, and
+ * a far quieter one. An unconfigured integration is skipped by a run that still
+ * happens: it opens a `sync_runs` row, finishes it, and names the variable it wants
+ * in its own response. An unset `CRON_SECRET` is refused by `authoriseSync` *before*
+ * that row exists, so nothing is recorded anywhere and the only symptom is data that
+ * stops arriving — which reads as a quiet week, not as a broken scheduler.
+ *
+ * Both failure paths are worth stating, because neither is the one you would guess:
+ *
+ *  - Vercel only attaches `Authorization: Bearer $CRON_SECRET` when the variable is
+ *    set. Unset, the scheduled request arrives with no credentials at all, falls
+ *    through to the session branch, and is answered **401 Not signed in** — exactly
+ *    what a stranger gets, so nothing in the answer hints at a misconfiguration.
+ *  - A bearer call made by hand against the same deployment gets **503**, and that is
+ *    the only place the real reason is ever stated.
+ *
+ * Both were true of production on 2026-07-31: `/api/sync` answered 401 to an
+ * anonymous request and 503 to a bearer token, while `sync_runs` held nothing newer
+ * than 2026-07-28. This is the same silent-failure shape as a cron missing from
+ * `PUBLIC_PATHS`, one rejection code along.
+ */
+export function cronStatus() {
+  const secret = optional('CRON_SECRET')
+  return {
+    configured: Boolean(secret),
+    missing: secret ? [] : ['CRON_SECRET'],
+    schedules: CRON_SCHEDULES,
+  }
+}
+
 /** Which integrations have enough configuration to attempt a sync. */
 export function integrationStatus() {
   const gl = gitlabEnv()

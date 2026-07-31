@@ -22,11 +22,14 @@ import {
   readAttribution,
   readScored,
   readVerdict,
+  WINDOW_COVERAGE_FLOOR,
+  type CronRead,
   type Guard,
   type SourceHealth,
   type TrustClause,
   type TrustLevel,
   type TrustVerdict,
+  type WindowCoverage,
 } from '@/lib/trust'
 import {
   COMPLEXITY_COVERAGE_FLOOR,
@@ -50,6 +53,10 @@ export interface TrustReportProps {
   periodLabel: string
   kpis: OrgKpis
   sources: SourceHealth[]
+  /** How much of the selected period each stream was ever collected for. */
+  coverage: WindowCoverage[]
+  /** Whether the nightly runs can authenticate. */
+  cron: CronRead
   outliers: EngineerOutlier[]
   squads: SquadOutlier[]
   identities: UnmatchedIdentityRow[]
@@ -87,6 +94,8 @@ export function TrustReport({
   periodLabel,
   kpis,
   sources,
+  coverage,
+  cron,
   outliers,
   squads,
   identities,
@@ -102,6 +111,8 @@ export function TrustReport({
     withholdings,
     scored,
     people: { directory: people.directory, inMetrics: people.inMetrics },
+    windows: { label: periodLabel, coverage },
+    cron,
   })
 
   const alerts = sources.flatMap((s) => s.alerts)
@@ -297,6 +308,91 @@ export function TrustReport({
         </div>
       </section>
 
+      {/* --- how deep the collection goes -------------------------------------- */}
+
+      <section id="depth" className="scroll-mt-24">
+        <SectionHeading
+          title="How much of this window was ever collected"
+          hint="A share of the selected period that the sync has actually walked. The rest was never requested, so it is empty rather than quiet."
+        />
+        <Card>
+          <p className="mb-4 text-xs leading-relaxed text-[var(--color-muted)]">
+            {depthLead(coverage, periodLabel)}
+          </p>
+          <CoverageMeters rows={depthRows(coverage)} />
+        </Card>
+        <MetricNote>
+          This is the one gap that looks like a finding rather than a fault: an uncollected
+          month is not an empty chart, it is a <em>low</em>{' '}
+          month, and a low month reads as a team that shipped less. It is measured from the
+          walk&apos;s own frontier cursor rather
+          than from the rows, because a row count cannot tell &quot;nobody merged anything&quot;
+          apart from &quot;that month was never fetched&quot; — the two produce the same chart and
+          opposite conclusions. Each backward walk keeps its own frontier and they do not travel
+          together: deployments hit their page limit soonest, being the most numerous, so
+          deployment depth is routinely weeks shallower than merge-request depth and cannot be
+          inferred from it.
+        </MetricNote>
+
+        <div className="mt-4">
+          <Table
+            head={
+              <>
+                <Th>Stream</Th>
+                <Th>Collected back to</Th>
+                <Th align="right">Oldest row held</Th>
+                <Th align="right">Rows in window</Th>
+                <Th>Walk</Th>
+              </>
+            }
+          >
+            {coverage.map((row) => (
+              <tr key={row.label}>
+                <Td className="font-medium">{row.label}</Td>
+                <Td>
+                  {row.coveredPct === null ? (
+                    <span className="text-[var(--color-muted)]">unknown</span>
+                  ) : (
+                    <>
+                      {relativeDate(row.complete ? row.configuredWindowStart : row.reachedBackTo)}
+                      <div className="text-[11px] text-[var(--color-muted)]">
+                        {row.coveredDays} of {row.windowDays} days of this window
+                      </div>
+                    </>
+                  )}
+                </Td>
+                <Td align="right" numeric>
+                  {row.earliestRecordAt ? (
+                    relativeDate(row.earliestRecordAt)
+                  ) : (
+                    <span className="text-[var(--color-muted)]">none</span>
+                  )}
+                </Td>
+                <Td align="right" numeric>
+                  {nf(row.rowsInWindow)}
+                </Td>
+                <Td>
+                  {row.complete ? (
+                    <Pill tone="good">reached the window start</Pill>
+                  ) : row.reachedBackTo === null ? (
+                    <Pill tone="warn">never walked backwards</Pill>
+                  ) : (
+                    <Pill tone="warn">still walking back</Pill>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </Table>
+          <MetricNote>
+            &quot;Oldest row held&quot; is routinely older than &quot;collected back to&quot;, and
+            that is not a contradiction — the forward walk windows on last-updated, so a merge
+            request opened in 2021 and touched last week arrives whole. A handful of such rows is
+            what makes an uncollected span look inhabited, which is why depth is read off the
+            frontier and never off the oldest row.
+          </MetricNote>
+        </div>
+      </section>
+
       {/* --- freshness --------------------------------------------------------- */}
 
       <section id="freshness" className="scroll-mt-24">
@@ -304,6 +400,19 @@ export function TrustReport({
           title="Whether the data is current"
           hint="A sync that stops does not make the numbers look wrong. It makes them look like a quiet week."
         />
+        {cron.configured ? null : (
+          <div className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs leading-relaxed">
+            <strong className="font-semibold">
+              The scheduled runs cannot authenticate, so nothing below will refresh on its own.
+            </strong>{' '}
+            {cron.missing.join(' and ')} {cron.missing.length === 1 ? 'is' : 'are'} unset in this
+            environment. Vercel only attaches the bearer token when the variable exists, so{' '}
+            {cron.schedules.map((s) => s.path).join(' and ')} arrive with no credentials and are
+            answered 401 before a run is ever opened — which is why the table below shows hours of
+            staleness and no failed run to explain it. Every figure on every page is as old as the
+            last run somebody started by hand.
+          </div>
+        )}
         <SyncAlertBanner alerts={alerts} />
         <div className={alerts.length > 0 ? 'mt-3' : ''}>
           <Table
@@ -325,6 +434,12 @@ export function TrustReport({
                   {source.running ? (
                     <div className="mt-1 text-[11px] text-[var(--color-muted)]">
                       a run is in flight
+                    </div>
+                  ) : null}
+                  {source.abandonedRuns > 0 ? (
+                    <div className="mt-1 text-[11px] text-[var(--color-muted)]">
+                      {nf(source.abandonedRuns)} abandoned since{' '}
+                      {relativeDate(source.oldestAbandonedAt)}
                     </div>
                   ) : null}
                 </Td>
@@ -674,6 +789,50 @@ export function TrustReport({
       </p>
     </div>
   )
+}
+
+/**
+ * The depth meters, reusing the coverage meter because it is the same kind of claim:
+ * a share of a known whole, measured against the floor it has to clear, and drawn as
+ * an empty dashed track when the share was never measured at all.
+ */
+function depthRows(coverage: WindowCoverage[]): CoverageMeterRow[] {
+  return coverage.map((row) => ({
+    label: row.label,
+    value: row.coveredPct,
+    floor: WINDOW_COVERAGE_FLOOR,
+    of: `of the ${row.windowDays}-day window has collected history behind it`,
+    consequence: row.consequence,
+  }))
+}
+
+/**
+ * One sentence naming the shallowest stream, because a reader who takes only the top
+ * line of this section must not take away that the window is whole.
+ */
+function depthLead(coverage: WindowCoverage[], periodLabel: string): string {
+  const measured = coverage.filter((c) => c.coveredPct !== null)
+  const unmeasured = coverage.filter((c) => c.coveredPct === null)
+  const worst = [...measured].sort((a, b) => a.coveredPct! - b.coveredPct!)[0]
+
+  if (!worst) {
+    return `Nothing here has been walked backwards yet, so how far “${periodLabel}” actually reaches is unmeasured — which is not the same as it being empty, and not the same as it being whole.`
+  }
+  if (worst.coveredPct! >= WINDOW_COVERAGE_FLOOR && unmeasured.length === 0) {
+    return `Every stream has been collected across the whole of “${periodLabel}”, so a low week on any chart is a low week rather than a gap.`
+  }
+
+  const lead =
+    worst.coveredPct! >= WINDOW_COVERAGE_FLOOR
+      ? `The streams that have been walked cover the whole of “${periodLabel}”.`
+      : `“${periodLabel}” is ${worst.windowDays} days long and ${worst.label.toLowerCase()} have been collected for ${worst.coveredDays} of them — ${pct(worst.coveredPct!, 0)} of the window. The rest was never requested, so it is empty rather than quiet, and it drags every rate computed over this period towards zero.`
+
+  if (unmeasured.length === 0) return lead
+
+  const names = unmeasured.map((c) => c.label.toLowerCase()).join(' and ')
+  return `${lead} ${names[0].toUpperCase()}${names.slice(1)} ${
+    unmeasured.length === 1 ? 'has' : 'have'
+  } no recorded depth at all, which is unknown rather than zero.`
 }
 
 /** What each source is the only witness for, so a stale row has a consequence. */

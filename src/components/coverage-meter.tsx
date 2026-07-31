@@ -146,10 +146,17 @@ function Meter({
           stroke="var(--chart-ref)"
           strokeWidth={1}
         />
+        {/* Centred under the tick, except where the tick is near an end of the track
+            and centring would push half the label outside the viewBox. A 99% floor
+            sits two pixels from the right edge and rendered as "9" plus a sliver
+            before this; the anchor flips instead so the label stays inside and stays
+            attached to the line it belongs to. */}
         <text
           x={at(floor)}
           y={TRACK_H - 1}
-          textAnchor="middle"
+          textAnchor={
+            at(floor) > TRACK_W - 12 ? 'end' : at(floor) < 12 ? 'start' : 'middle'
+          }
           className="tnum fill-[var(--color-muted)] text-[8px]"
         >
           {floor}

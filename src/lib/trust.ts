@@ -127,12 +127,40 @@ export interface SyncRunFacts {
   finished_at: string | null
 }
 
+/**
+ * How long a `running` row may stay open before it stops meaning "in flight".
+ *
+ * A serverless invocation cannot outlive `maxDuration`, which is 300s on both cron
+ * routes, so a row still open twenty minutes later is not a slow run — it is a run
+ * that died between `start()` and `finish()` and can never write its own ending.
+ * Generous by a factor of four against the budget so a genuinely slow run is never
+ * libelled, and short enough that an abandoned one is visible the same morning.
+ *
+ * Lives here rather than in `sync/runner.ts` for two reasons. It is a judgement about
+ * when a claim stops being believable, which is this module's subject; and this module
+ * must stay free of runtime imports so `node --test` can load it directly, which means
+ * the dependency has to point this way — `runner.ts` imports the constant, not the
+ * other way round.
+ */
+export const STALE_RUN_AFTER_MS = 20 * 60_000
+
 export interface SourceHealth {
   source: string
   /** False when no run has finished — nothing can be said about this source yet. */
   observed: boolean
-  /** A run is in flight right now, which says nothing about health either way. */
+  /**
+   * A run is genuinely in flight, which says nothing about health either way. False
+   * for a row that has been open past `STALE_RUN_AFTER_MS` — see `abandonedRuns`.
+   */
   running: boolean
+  /**
+   * Rows still marked `running` long past any invocation's lifetime. A crashed run
+   * that never reached a terminal status, counted rather than believed: left as
+   * "in flight" it hides the fact that nothing is running at all.
+   */
+  abandonedRuns: number
+  /** When the oldest abandoned run started, so the table can say how long ago. */
+  oldestAbandonedAt: string | null
   lastStatus: string | null
   lastSuccessAt: string | null
   /** Hours since the last successful run finished. Null means none ever has. */
@@ -166,15 +194,41 @@ export function readSourceHealth(runs: SyncRunFacts[], now = Date.now()): Source
     // 'all' is a combined run and counts towards every source it covers.
     const forSource = ordered.filter((r) => r.source === source || r.source === 'all')
     const finished = forSource.filter((r) => r.status !== 'running')
-    const running = forSource.some((r) => r.status === 'running')
+
+    // Open rows split two ways on age, and the split is the whole point: four gitlab
+    // rows sat `running` in production for three days, and reading them as "in flight"
+    // is what let a scheduler that had stopped firing look like one mid-run.
+    const open = forSource.filter((r) => r.status === 'running')
+    const abandoned = open.filter((r) => now - new Date(r.started_at).getTime() > STALE_RUN_AFTER_MS)
+    const running = open.length > abandoned.length
+    const oldestAbandonedAt = abandoned.length > 0 ? (abandoned.at(-1)?.started_at ?? null) : null
 
     const base = {
       source,
       running,
+      abandonedRuns: abandoned.length,
+      oldestAbandonedAt,
       finishedRuns: finished.length,
       consecutivePartial: 0,
       alerts: [] as SyncAlert[],
     }
+
+    // An abandoned run is bad news on its own terms and does not depend on anything
+    // else being wrong, so it is raised before the branches below can return early.
+    const abandonedAlerts: SyncAlert[] =
+      abandoned.length === 0
+        ? []
+        : [
+            {
+              source,
+              level: 'bad',
+              message: `${abandoned.length} run${abandoned.length === 1 ? '' : 's'} never reported a result — ${
+                abandoned.length === 1 ? 'it has' : 'the oldest has'
+              } been marked running for ${Math.round(
+                (now - new Date(oldestAbandonedAt!).getTime()) / 3_600_000,
+              )} hours`,
+            },
+          ]
 
     if (finished.length === 0) {
       return {
@@ -183,7 +237,8 @@ export function readSourceHealth(runs: SyncRunFacts[], now = Date.now()): Source
         lastStatus: null,
         lastSuccessAt: null,
         hoursSinceSuccess: null,
-        level: 'unknown' as TrustLevel,
+        level: (abandonedAlerts.length > 0 ? 'bad' : 'unknown') as TrustLevel,
+        alerts: abandonedAlerts,
       }
     }
 
@@ -204,11 +259,14 @@ export function readSourceHealth(runs: SyncRunFacts[], now = Date.now()): Source
         lastSuccessAt,
         hoursSinceSuccess,
         level: 'bad' as TrustLevel,
-        alerts: [{ source, level: 'bad' as SyncAlertLevel, message: 'the last run failed' }],
+        alerts: [
+          { source, level: 'bad' as SyncAlertLevel, message: 'the last run failed' },
+          ...abandonedAlerts,
+        ],
       }
     }
 
-    const alerts: SyncAlert[] = []
+    const alerts: SyncAlert[] = [...abandonedAlerts]
     if (hoursSinceSuccess === null) {
       alerts.push({
         source,
@@ -251,6 +309,164 @@ export function readSourceHealth(runs: SyncRunFacts[], now = Date.now()): Source
           ? ('warn' as TrustLevel)
           : ('ok' as TrustLevel),
       alerts,
+    }
+  })
+}
+
+// --- can the scheduler even run -----------------------------------------------
+
+export interface CronRead {
+  configured: boolean
+  missing: string[]
+  /** Paths and schedules, so the page can name what is not firing. */
+  schedules: readonly { path: string; schedule: string; what: string }[]
+  level: TrustLevel
+}
+
+/**
+ * Whether the nightly runs can authenticate.
+ *
+ * This is the only fact on the trust page that is read from configuration rather
+ * than from data, and it earns the exception by being the one failure the data
+ * cannot show. Every other signal here is a consequence — "gitlab last completed 72
+ * hours ago" is what an unset `CRON_SECRET` *looks* like from inside the database,
+ * because a rejected cron writes no row to be stale. Stating the cause next to the
+ * symptom is the difference between "the sync is behind" and "the sync will never
+ * catch up on its own".
+ */
+export function readCron(status: { configured: boolean; missing: string[]; schedules: CronRead['schedules'] }): CronRead {
+  return { ...status, level: status.configured ? 'ok' : 'bad' }
+}
+
+// --- how much of the window was ever collected --------------------------------
+
+/**
+ * A backfill that has provably reached the start of its window, or how far back it
+ * has got so far.
+ *
+ * One of these per stream, because the streams do not travel together. A GitLab
+ * project's merge requests, deployments and pipelines each carry their own `:oldest`
+ * frontier and each hit their page limit at a different depth — deployments soonest,
+ * being the most numerous — so "the backfill" is not one number and never was.
+ */
+export interface StreamFrontier {
+  /** Reads as a subject: "Merge requests". */
+  label: string
+  source: 'gitlab' | 'jira' | 'hibob'
+  /**
+   * The oldest instant the backward walk has provably reached, from the `:oldest`
+   * cursor. Null when no backward pass has recorded one — which is not the same as
+   * zero coverage and is not the same as complete.
+   */
+  reachedBackTo: string | null
+  /**
+   * True when the source's most recent run reported `backfill_complete`, which is
+   * the only evidence that the whole *configured* window was walked. Jira's walk is
+   * forward-only and has no frontier, so for Jira this is the only evidence available.
+   */
+  complete: boolean
+  /**
+   * Start of the collection window the sync is configured for — `BACKFILL_MONTHS`
+   * ago. Needed because "complete" does not mean "covers whatever period the reader
+   * selected": a finished twelve-month backfill still leaves a twelve-month view
+   * complete and says nothing about a longer one. Coverage is measured against
+   * whichever is later, this or the frontier.
+   */
+  configuredWindowStart: string
+  /** Oldest row actually stored, whatever the walk claims. */
+  earliestRecordAt: string | null
+  /** Rows stored inside the requested window. */
+  rowsInWindow: number
+  /** What reading this stream over an uncovered window gets you. */
+  consequence: string
+}
+
+export interface WindowCoverage extends Omit<StreamFrontier, 'consequence'> {
+  /** Share of the requested window with collected history behind it, 0-100. */
+  coveredPct: number | null
+  /** Days of the window walked, and the window's own length, for the sentence. */
+  coveredDays: number | null
+  windowDays: number
+  level: TrustLevel
+  consequence: string
+}
+
+/**
+ * A window is only quotable when essentially all of it was collected. Set just
+ * under 100 rather than at it because a frontier written mid-run sits minutes
+ * behind the window start it just crossed, and a 99.8% window is a rounding
+ * artefact rather than a gap in the history.
+ */
+export const WINDOW_COVERAGE_FLOOR = 99
+
+/** Below this the window is not a shorter window, it is a misleading one. */
+export const WINDOW_COVERAGE_BAD = 90
+
+/**
+ * How much of a period each stream actually has history for.
+ *
+ * The arithmetic is deliberately the crudest thing that cannot lie: the walk has
+ * reached back to some instant, and everything between the window start and that
+ * instant was never requested. Nothing here infers coverage from row counts, because
+ * row counts cannot tell "nobody merged anything that month" apart from "that month
+ * was never fetched" — and those two produce identical charts and opposite
+ * conclusions. That is the whole reason 86% of merged merge requests landing in the
+ * last quarter looked like a productivity story instead of a collection gap.
+ *
+ * Three outcomes, and the third is the one that matters:
+ *  - `complete` — the walk reached the start of the window it was configured for, so
+ *    coverage is measured from there. Note this is **not** automatically 100%: a
+ *    finished twelve-month backfill covers a twelve-month view and still leaves a
+ *    two-year one two thirds empty. Taking "complete" to mean "covers whatever the
+ *    reader picked" would reintroduce the assumption in a new place.
+ *  - a frontier short of that — the share behind it, and the days it is short.
+ *  - no frontier and not complete — **unknown**. Not zero, not a hundred. A stream
+ *    nobody has walked backwards is a stream whose depth is unmeasured.
+ */
+export function readWindowCoverage(
+  frontiers: StreamFrontier[],
+  range: { from: Date; to: Date },
+  now = Date.now(),
+): WindowCoverage[] {
+  const to = Math.min(range.to.getTime(), now)
+  const from = range.from.getTime()
+  const windowMs = Math.max(1, to - from)
+  const windowDays = Math.round(windowMs / 86_400_000)
+
+  return frontiers.map((f) => {
+    const { consequence, ...rest } = f
+
+    // How far back collection provably reaches. A finished backfill reaches its
+    // configured window start; an unfinished one reaches its frontier and no further.
+    const reachedAt = f.complete
+      ? new Date(f.configuredWindowStart).getTime()
+      : f.reachedBackTo === null
+        ? null
+        : new Date(f.reachedBackTo).getTime()
+
+    // A walk that went past the requested window start covers it, whatever it does for
+    // longer ones. This is exactly why the 90-day view is sound while 12 months is not.
+    const coveredPct =
+      reachedAt === null
+        ? null
+        : reachedAt <= from
+          ? 100
+          : Math.max(0, Math.min(100, ((to - reachedAt) / windowMs) * 100))
+
+    return {
+      ...rest,
+      consequence,
+      coveredPct,
+      coveredDays: coveredPct === null ? null : Math.round((coveredPct / 100) * windowDays),
+      windowDays,
+      level:
+        coveredPct === null
+          ? 'unknown'
+          : coveredPct >= WINDOW_COVERAGE_FLOOR
+            ? 'ok'
+            : coveredPct >= WINDOW_COVERAGE_BAD
+              ? 'warn'
+              : 'bad',
     }
   })
 }
@@ -483,6 +699,18 @@ export interface VerdictInput {
   scored: ScoredRead
   /** Directory headcount versus the headcount the metrics are built on. */
   people: { directory: number; inMetrics: number }
+  /**
+   * How much of the selected window each stream has history for, and the window's
+   * own name so the clause can say which view is short.
+   *
+   * Optional, and optional on purpose rather than as a convenience: a caller that
+   * has not measured coverage must produce a verdict with nothing to say about it.
+   * Defaulting an unmeasured window to "covered" is precisely the assumption this
+   * whole section exists to remove.
+   */
+  windows?: { label: string; coverage: WindowCoverage[] }
+  /** Whether the scheduler can authenticate. Omitted where it cannot be read. */
+  cron?: CronRead
 }
 
 /**
@@ -494,8 +722,23 @@ export interface VerdictInput {
  * judgement already made elsewhere in the app.
  */
 export function readVerdict(input: VerdictInput): TrustVerdict {
-  const { attribution, sources, withholdings, scored, people } = input
+  const { attribution, sources, withholdings, scored, people, windows, cron } = input
   const clauses: TrustClause[] = []
+
+  // 0. A scheduler that cannot authenticate outranks every staleness figure below,
+  //    because it is their cause. "gitlab last completed 72 hours ago" invites you to
+  //    wait for tonight's run; there is no tonight's run.
+  if (cron && !cron.configured) {
+    clauses.push({
+      section: 'freshness',
+      level: 'bad',
+      text: `the scheduled runs cannot authenticate — ${cron.missing.join(' and ')} ${
+        cron.missing.length === 1 ? 'is' : 'are'
+      } unset, so ${cron.schedules
+        .map((s) => s.path)
+        .join(' and ')} are refused before they start and nothing is recorded when they are`,
+    })
+  }
 
   // 1. A broken source makes every number wrong in the same believable direction,
   //    so it outranks everything else on the page.
@@ -505,6 +748,45 @@ export function readVerdict(input: VerdictInput): TrustVerdict {
       level: 'bad',
       text: `${source.source} is ${source.alerts[0]?.message ?? 'not healthy'}`,
     })
+  }
+
+  // 1b. A window the collection never reached is the one failure that looks like a
+  //     finding: the missing months read as months when less was shipped. Ranked with
+  //     the broken sources rather than with the caveats because a reader comparing
+  //     this quarter with last is comparing a walked window with an unwalked one.
+  if (windows) {
+    // Worst first, and a *measured* shortfall outranks an unmeasured one. "51 of 365
+    // days of deployments" is a finding a reader can act on; "pipeline depth is
+    // unknown" is a gap in our knowledge of a gap. Sorting unknowns first — which
+    // `?? -1` would do — buries the concrete statement under the vaguer one.
+    const short = [...windows.coverage]
+      .filter((c) => c.level === 'bad' || c.level === 'unknown')
+      .sort((a, b) => (a.coveredPct ?? Infinity) - (b.coveredPct ?? Infinity))
+    const worstShort = short[0]
+    if (worstShort) {
+      clauses.push({
+        section: 'depth',
+        level: worstShort.level === 'unknown' ? 'unknown' : 'bad',
+        text:
+          worstShort.coveredPct === null
+            ? `how far back ${worstShort.label.toLowerCase()} were ever collected is unknown, so "${windows.label}" may be a shorter window than it says`
+            : `"${windows.label}" holds only ${worstShort.coveredDays} of ${worstShort.windowDays} days of ${worstShort.label.toLowerCase()}${
+                short.length > 1 ? ` (and ${short.length - 1} other stream${short.length === 2 ? '' : 's'} are short too)` : ''
+              }, so the missing months read as quiet ones`,
+      })
+    }
+
+    // Short of the floor but not badly: worth a line, because a reader who takes only
+    // the headline should not be told a 94%-collected window is whole.
+    const nearlyThere = windows.coverage.filter((c) => c.level === 'warn')
+    if (!worstShort && nearlyThere.length > 0) {
+      const worst = nearlyThere.sort((a, b) => (a.coveredPct ?? 0) - (b.coveredPct ?? 0))[0]
+      clauses.push({
+        section: 'depth',
+        level: 'warn',
+        text: `${worst.label.toLowerCase()} cover ${worst.coveredDays} of the window's ${worst.windowDays} days, so the earliest weeks of "${windows.label}" are thinner than the rest`,
+      })
+    }
   }
 
   // 2. Attribution decides whether any per-person or per-squad total is a total.
