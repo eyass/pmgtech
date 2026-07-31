@@ -4,6 +4,10 @@
     {
       "path": "/api/sync",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/snapshots",
+      "schedule": "0 6 * * *"
     }
   ]
 }

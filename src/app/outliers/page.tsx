@@ -1,26 +1,40 @@
 import Link from 'next/link'
 
 import { AxisSummary } from '@/components/axis-summary'
+import { BumpChart, type BumpSubject } from '@/components/bump-chart'
 import { CohortStrip, type Cohort } from '@/components/cohort-strip'
+import { Movers } from '@/components/movers'
 import { BandPill, ShapePill } from '@/components/performance'
 import { Scatter, type ScatterPoint } from '@/components/scatter'
 import { SquadProfile, type SquadProfileRow } from '@/components/squad-profile'
+import { TrendSparkline } from '@/components/trend-sparkline'
 import { Card, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { hours, nf, pct } from '@/lib/format'
 import {
   getEngineerOutliers,
+  getEngineerScoreHistory,
+  getMetricTargets,
   getSquadOutliers,
+  getSquadScoreHistory,
   getSquads,
   PERIODS,
   resolvePeriod,
 } from '@/lib/queries'
+import {
+  buildSeries,
+  captureDays,
+  captureLabel,
+  rankMovers,
+  type ScorePoint,
+  type ScoreSeries,
+} from '@/lib/score-history'
+import { scoredTargets, type MetricTargetResolution } from '@/lib/targets'
 import {
   COMPLEXITY_COVERAGE_FLOOR,
   COMPLEXITY_RUBRIC,
   ENGINEER_SCORE_RUBRIC,
   scoreTone,
   seniorityRank,
-  SQUAD_SCORE_RUBRIC,
   type EngineerOutlier,
   type ScoreConfidence,
   type SquadOutlier,
@@ -73,6 +87,31 @@ function shortName(full: string): string {
   return `${parts[0]} ${parts[parts.length - 1]![0]}.`
 }
 
+/**
+ * A stored snapshot row, reduced to the four fields a trend is allowed to use.
+ *
+ * `definitionVersion` is carried through untouched and is never defaulted: it is the
+ * only thing that says whether two of these points are comparable, and a point that
+ * lost it would be silently comparable with everything.
+ */
+function snapshotPoint(row: {
+  captured_for: string
+  definition_version: string
+  score: number | null
+  rank_in_org: number | null
+  score_confidence: ScoreConfidence | null
+  confidence_reason: string | null
+}): ScorePoint {
+  return {
+    capturedFor: row.captured_for,
+    definitionVersion: row.definition_version,
+    score: row.score,
+    rankInOrg: row.rank_in_org,
+    confidence: row.score_confidence,
+    confidenceReason: row.confidence_reason,
+  }
+}
+
 export default async function OutliersPage({
   searchParams,
 }: {
@@ -91,9 +130,15 @@ export default async function OutliersPage({
   const squads = await getSquads()
   const selected = squadFilter ? squads.find((s) => s.key === squadFilter) : undefined
 
-  const [engineers, squadRows] = await Promise.all([
+  const [engineers, squadRows, engineerHistory, squadHistory, targetSet] = await Promise.all([
     getEngineerOutliers(range, selected?.id),
     getSquadOutliers(range),
+    // History is keyed by the period, not by the range: a snapshot is a measurement
+    // that already happened, and a '7d' series and a '90d' series are different
+    // measurements of the same subject.
+    getEngineerScoreHistory(key),
+    getSquadScoreHistory(key),
+    getMetricTargets(),
   ])
 
   const scored = engineers.filter((e) => e.score !== null)
@@ -154,6 +199,36 @@ export default async function OutliersPage({
       collaboration: s.collaboration_score,
     },
   }))
+
+  // --- what the scores were, as opposed to what they are ----------------------
+  //
+  // Snapshots, not a recomputation: `capture_score_snapshots` wrote these down on the
+  // day, stamped with the scoring formula that produced them. Every point carries its
+  // `definition_version` all the way to the charts, which is what lets them refuse to
+  // draw a delta across a formula change instead of quietly drawing one.
+  const engineerSeries: ScoreSeries[] = buildSeries(
+    // The squad filter scopes the history the same way it scopes everything else, so
+    // the chart under a filtered page is about the people the page is about.
+    engineerHistory.filter((row) => !selected || row.squad_id === selected.id),
+    (row) => ({
+      id: row.engineer_id,
+      name: row.full_name,
+      shortName: shortName(row.full_name),
+      point: snapshotPoint(row),
+    }),
+  )
+  const squadSeries: ScoreSeries[] = buildSeries(squadHistory, (row) => ({
+    id: row.squad_id,
+    name: row.squad_name,
+    shortName: row.squad_name.replace(/^Team /, ''),
+    point: snapshotPoint(row),
+  }))
+  const engineerMovers = rankMovers(engineerSeries)
+  const historyDays = captureDays([...engineerSeries, ...squadSeries])
+  const engineerTrends = new Map(engineerSeries.map((s) => [s.id, s.points]))
+  const squadTrends = new Map(squadSeries.map((s) => [s.id, s.points]))
+  const bumpSubjects = (series: ScoreSeries[]): BumpSubject[] =>
+    series.map((s) => ({ id: s.id, name: s.name, shortName: s.shortName, points: s.points }))
 
   const bestSquad = squadRows[0]
   const worstSquad = squadRows[squadRows.length - 1]
@@ -338,6 +413,60 @@ export default async function OutliersPage({
         </MetricNote>
       </section>
 
+      {/* --- what the scores were --------------------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="Score history"
+          hint="Stored snapshots of the same scores, captured nightly. This is the only part of the page that is not recomputed from the current data, which is exactly what makes it able to say whether anything moved."
+        />
+        <div className="space-y-4">
+          <Card>
+            <h3 className="text-sm font-semibold">Engineers, rank by capture</h3>
+            <div className="mt-3">
+              <BumpChart
+                subjects={bumpSubjects(engineerSeries)}
+                subjectNoun="engineer"
+                subjectPlural="engineers"
+              />
+            </div>
+          </Card>
+
+          <Card>
+            <h3 className="text-sm font-semibold">Biggest movers</h3>
+            <div className="mt-3">
+              <Movers result={engineerMovers} subjectNoun="engineer" subjectPlural="engineers" />
+            </div>
+          </Card>
+
+          <Card>
+            <h3 className="text-sm font-semibold">Squads, rank by capture</h3>
+            <div className="mt-3">
+              <BumpChart
+                subjects={bumpSubjects(squadSeries)}
+                subjectNoun="squad"
+                subjectPlural="squads"
+              />
+            </div>
+          </Card>
+        </div>
+        <MetricNote>
+          Two rules travel with every one of these charts, and both are refusals.{' '}
+          <strong>A difference smaller than 15 points is not a movement</strong> — that is one
+          interquartile range of a cohort, the same gate the tie bands and the standing pills use,
+          so a rank that shuffled on rounding is named as noise rather than reported as a climb.
+          And <strong>no line, arrow or delta is drawn across a scoring-definition change</strong>:
+          0023 and 0024 each rewrote every historical score, so a snapshot taken under one formula
+          and one taken under the next are two questions each answered once, and the honest render
+          of that is a break rather than a flat line.{' '}
+          {historyDays.length === 0
+            ? 'Nothing has been captured for this period yet.'
+            : historyDays.length === 1
+              ? `There is exactly one capture, on ${captureLabel(historyDays[0]!)}, so every trend here shows its "not enough history yet" state. That is correct rather than broken: there is deliberately no backfill, because running today's formula over last month's window would manufacture the false continuity the version stamp exists to prevent. History accumulates from here, one capture a night.`
+              : `${historyDays.length} captures so far, ${captureLabel(historyDays[0]!)} to ${captureLabel(historyDays[historyDays.length - 1]!)}.`}
+        </MetricNote>
+      </section>
+
       {/* --- how the score works ---------------------------------------------- */}
 
       <Card>
@@ -367,16 +496,7 @@ export default async function OutliersPage({
               squad is only bottom if it is actually missing the targets, and a strong org does not
               manufacture a loser.
             </p>
-            <ul className="mt-2 space-y-0.5 text-xs text-[var(--color-muted)]">
-              {Object.values(SQUAD_SCORE_RUBRIC).flatMap((dimension) =>
-                dimension.metrics.map((metric) => (
-                  <li key={metric.key}>
-                    <span className="font-medium">{metric.label}</span> — {metric.bad} is 0,{' '}
-                    {metric.good} is 100
-                  </li>
-                )),
-              )}
-            </ul>
+            <SquadRubric targetSet={targetSet} />
           </div>
         </div>
         <MetricNote>
@@ -405,6 +525,12 @@ export default async function OutliersPage({
               <Th>#</Th>
               <Th>Squad</Th>
               <Th align="right">Score</Th>
+              <Th
+                align="right"
+                title="Change since the first comparable capture. No number is shown when the two captures were scored by different formulas, because that is not a change."
+              >
+                Trend
+              </Th>
               <Th align="right">Throughput</Th>
               <Th align="right">Flow</Th>
               <Th align="right">Quality</Th>
@@ -426,6 +552,16 @@ export default async function OutliersPage({
               </Td>
               <Td align="right">
                 <ScorePill score={squad.score} />
+              </Td>
+              <Td align="right">
+                {/* Absolute scale: a squad score is measured against fixed thresholds,
+                    so its sparkline must not rescale to its own spread the way an
+                    engineer's does. */}
+                <TrendSparkline
+                  points={squadTrends.get(squad.squad_id) ?? []}
+                  label={squad.squad_name}
+                  scale="absolute"
+                />
               </Td>
               <SubScore
                 score={squad.throughput_score}
@@ -485,7 +621,7 @@ export default async function OutliersPage({
           title="Engineers, ranked"
           hint="Scored against their own seniority cohort. Rank within level is shown next to rank in the org, because the cohort is what the score is measured against."
         />
-        <EngineerTable rows={engineers} />
+        <EngineerTable rows={engineers} trends={engineerTrends} />
         <MetricNote>
           The spread is narrow on purpose: 15 points is a full interquartile range of the
           cohort&apos;s own distribution, so a group of engineers doing similar work lands in a tight
@@ -566,6 +702,58 @@ function ComplexityBanner({ rows }: { rows: EngineerOutlier[] }) {
       <MetricNote>{COMPLEXITY_RUBRIC.blindSpot}</MetricNote>
     </Card>
   )
+}
+
+/**
+ * The thresholds a squad is actually scored against, read from the live targets.
+ *
+ * These numbers used to be printed straight out of `SQUAD_SCORE_RUBRIC`, which stopped
+ * being the source of truth in `0027_configurable_targets.sql`: the thresholds are rows
+ * in `metric_targets` now, editable from the admin screen without a deploy. A page that
+ * keeps printing the constants says "60 is 0, 90 is 100" for as long as it takes somebody
+ * to notice, which is worse than saying nothing — the whole point of putting the rubric on
+ * the page is that a reader can check a score against it.
+ *
+ * The constants are still the fallback and still do their job: `resolveMetricTargets`
+ * layers stored rows over `METRIC_TARGET_DEFAULTS`, which is assembled from exactly these
+ * numbers, so an unreachable table means slightly stale targets rather than a page of
+ * zeros or a 500. When that happens it is said out loud rather than rendered silently,
+ * because a target nobody can read is a different claim from a target somebody set.
+ */
+function SquadRubric({ targetSet }: { targetSet: MetricTargetResolution }) {
+  const targets = scoredTargets(targetSet.targets)
+  return (
+    <>
+      <ul className="mt-2 space-y-0.5 text-xs text-[var(--color-muted)]">
+        {targets.map((target) => (
+          <li key={target.key}>
+            <span className="font-medium">{target.label}</span> — {nf(target.bad, decimals(target.bad))} is 0,{' '}
+            {nf(target.good, decimals(target.good))} is 100
+            {target.source === 'stored' && target.updatedBy ? (
+              <span className="text-[var(--color-muted)]"> · set by {target.updatedBy}</span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {targetSet.usingFallback ? (
+        <p className="mt-1.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+          These are the built-in defaults, not the stored targets — the{' '}
+          <code className="text-[10px]">metric_targets</code> table could not be read. They are
+          also what the score is being computed against right now, so the page and the score still
+          agree; they just cannot reflect an edit somebody made on{' '}
+          <Link href="/admin#targets" className="underline">
+            the admin screen
+          </Link>
+          .
+        </p>
+      ) : null}
+    </>
+  )
+}
+
+/** Targets are whole numbers except the Gini, which is not in the squad score anyway. */
+function decimals(value: number): number {
+  return Number.isInteger(value) ? 0 : 2
 }
 
 function HeadlineCard({
@@ -694,7 +882,14 @@ function GapPill({ standing, net }: { standing: Standing; net: number }) {
   return <Pill tone="neutral">even</Pill>
 }
 
-function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
+function EngineerTable({
+  rows,
+  trends,
+}: {
+  rows: EngineerOutlier[]
+  /** Stored captures per engineer id, for the trend column. Empty until one exists. */
+  trends: Map<string, ScorePoint[]>
+}) {
   return (
     <Table
       empty="No engineer has enough data in this period."
@@ -705,6 +900,12 @@ function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
           <Th>Level</Th>
           <Th>Squad</Th>
           <Th align="right">Score</Th>
+          <Th
+            align="right"
+            title="Change since the first comparable capture. A difference inside the 15-point noise floor is reported as no material change, and no change is stated across a scoring-definition boundary."
+          >
+            Trend
+          </Th>
           <Th align="right" title="Dimensions materially apart from the cohort median. 'even' means the score gap is inside the noise.">
             Gap
           </Th>
@@ -740,6 +941,15 @@ function EngineerTable({ rows }: { rows: EngineerOutlier[] }) {
           </Td>
           <Td align="right">
             <ScorePill score={engineer.score} />
+          </Td>
+          <Td align="right">
+            {/* Cohort scale: 50 is the level median, and the domain never zooms
+                tighter than 40 points, so a near-tie stays a near-tie. */}
+            <TrendSparkline
+              points={trends.get(engineer.engineer_id) ?? []}
+              label={engineer.full_name}
+              scale="cohort"
+            />
           </Td>
           <Td align="right">
             <GapPill standing={engineer.standing} net={engineer.net} />
