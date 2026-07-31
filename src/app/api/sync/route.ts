@@ -1,11 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { integrationStatus } from '@/lib/env'
-import { authoriseSync } from '@/lib/sync/auth'
+import { supabaseAdmin } from '@/lib/supabase/admin'
+import { authoriseSync, recordRejectedCron } from '@/lib/sync/auth'
 import { syncGitLab } from '@/lib/sync/gitlab'
 import { syncHiBob } from '@/lib/sync/hibob'
 import { syncJira } from '@/lib/sync/jira'
-import type { SyncMode } from '@/lib/sync/runner'
+import { expireAbandonedRuns, type SyncMode } from '@/lib/sync/runner'
 
 /**
  * Sync orchestrator. Also the Vercel Cron target.
@@ -34,8 +35,18 @@ export async function POST(request: NextRequest) {
 async function handle(request: NextRequest) {
   const caller = await authoriseSync(request)
   if (caller.kind === 'denied') {
+    // A refused scheduled run is written down before the answer goes out. Otherwise
+    // the only trace is a non-2xx in Vercel's cron log, `sync_runs` keeps whatever row
+    // it had before the scheduler broke, and the app reports "gitlab last completed 72
+    // hours ago" — a true sentence that points at the wrong thing.
+    await recordRejectedCron(request, caller)
     return NextResponse.json({ error: caller.reason }, { status: caller.status })
   }
+
+  // Close anything a previous invocation abandoned, before opening rows of our own. A
+  // run killed past its budget cannot write its own ending, and left open it reads as
+  // a run still in flight — which is how four dead rows made a stopped sync look busy.
+  const reaped = await expireAbandonedRuns(supabaseAdmin())
 
   const params = request.nextUrl.searchParams
   const source = (params.get('source') ?? 'all') as Source
@@ -89,6 +100,7 @@ async function handle(request: NextRequest) {
       trigger,
       ran: Object.keys(results),
       results,
+      abandonedClosed: reaped.expired > 0 ? reaped : undefined,
       skipped: Object.keys(skipped).length > 0 ? skipped : undefined,
       failures: Object.keys(failures).length > 0 ? failures : undefined,
       hint:

@@ -1,4 +1,5 @@
 import { TrustReport } from '@/components/sections/trust-report'
+import { cronStatus } from '@/lib/env'
 import {
   getEngineerOutliers,
   getEngineersForAdmin,
@@ -9,6 +10,8 @@ import {
   PERIODS,
   resolvePeriod,
 } from '@/lib/queries'
+import { getWindowCoverage } from '@/lib/sync/coverage'
+import { readCron } from '@/lib/trust'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,9 +33,13 @@ export default async function TrustPage({
   const { period } = await searchParams
   const { key, range } = resolvePeriod(period)
 
-  const [kpis, sources, outliers, squads, identities, directory] = await Promise.all([
+  const [kpis, sources, coverage, outliers, squads, identities, directory] = await Promise.all([
     getOrgKpis(range),
     getSourceHealth(),
+    // How far back the collection actually reaches, per stream. Read for the selected
+    // period, because that is the question: 90 days is fully collected here and 12
+    // months is not, and a coverage figure that ignored the period could not say so.
+    getWindowCoverage(range),
     getEngineerOutliers(range),
     getSquadOutliers(range),
     getUnmatchedIdentities(),
@@ -47,6 +54,13 @@ export default async function TrustPage({
       periodLabel={PERIODS[key].label}
       kpis={kpis}
       sources={sources}
+      coverage={coverage}
+      // The one fact on this page read from configuration rather than from data, and
+      // the only failure the data cannot show: a refused cron writes no row, so there
+      // is no stale row to find. Read here because a server component can, and passed
+      // in as a prop like everything else so the report stays renderable without a
+      // request.
+      cron={readCron(cronStatus())}
       outliers={outliers}
       squads={squads}
       identities={identities}

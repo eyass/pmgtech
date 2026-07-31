@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { supabaseAdmin } from '@/lib/supabase/admin'
 import { dedupeByConflictKey } from '@/lib/sync/matching'
+import { STALE_RUN_AFTER_MS } from '@/lib/trust'
 
 export type SyncSource = 'gitlab' | 'jira' | 'hibob' | 'all'
 export type SyncMode = 'incremental' | 'backfill'
@@ -121,6 +122,68 @@ export class SyncContext {
     from.setMonth(from.getMonth() - backfillMonths)
     return from.toISOString()
   }
+}
+
+/**
+ * What an expired run's `error` column says. A constant so the trust page, a human
+ * reading `/admin`, and this module cannot describe the same row three ways.
+ */
+export const ABANDONED_RUN_MESSAGE =
+  'Abandoned: no terminal status was ever written. The invocation ended between start and finish — a timeout, an out-of-memory kill, or a process stopped by hand — so this run was closed by the next sync rather than by itself.'
+
+/**
+ * Close runs that never reported a result.
+ *
+ * `finish()` is the only writer of a terminal status, and it runs inside the same
+ * invocation as the work. Anything that ends the invocation without unwinding —
+ * exceeding `maxDuration`, an OOM kill, a local process interrupted — leaves the row
+ * saying `running` for ever. Production held four such rows for three days, and they
+ * did real damage beyond looking untidy: `readSourceHealth` treated them as a run in
+ * flight, so a scheduler that had stopped firing altogether presented as a sync
+ * mid-work.
+ *
+ * Called at the top of the sync route, which is the one place guaranteed to execute
+ * before any new row is opened. Deliberately not called from `SyncContext.start()`:
+ * three sources start three contexts per request and this only needs doing once.
+ *
+ * Writes `error` rather than `partial`, because `partial` is a designed outcome that
+ * carries a cursor and a stats blob a later run can resume from, and an abandoned run
+ * carries neither. Leaves `duration_ms` null on purpose — we never learned how long it
+ * ran, and inventing "now minus started_at" would record the gap until the next sync
+ * as though it were work.
+ */
+export async function expireAbandonedRuns(
+  db: SupabaseClient,
+  now: Date = new Date(),
+  after: number = STALE_RUN_AFTER_MS,
+): Promise<{ expired: number; sources: string[] }> {
+  const cutoff = new Date(now.getTime() - after).toISOString()
+
+  const { data, error } = await db
+    .from('sync_runs')
+    .select('id, source')
+    .eq('status', 'running')
+    .lt('started_at', cutoff)
+  // A failure to tidy up must never stop the sync that was about to happen.
+  if (error) return { expired: 0, sources: [] }
+
+  const stale = (data ?? []) as { id: string; source: string }[]
+  if (stale.length === 0) return { expired: 0, sources: [] }
+
+  const { error: writeError } = await db
+    .from('sync_runs')
+    .update({
+      status: 'error',
+      finished_at: now.toISOString(),
+      error: ABANDONED_RUN_MESSAGE,
+    })
+    .in(
+      'id',
+      stale.map((r) => r.id),
+    )
+  if (writeError) return { expired: 0, sources: [] }
+
+  return { expired: stale.length, sources: [...new Set(stale.map((r) => r.source))].sort() }
 }
 
 /** Chunked upsert — Supabase rejects very large single payloads. */
