@@ -1,0 +1,42 @@
+-- =============================================================================
+-- 0030_revoke_anon_on_engineers.sql — close a bootstrap grant on the directory
+-- =============================================================================
+--
+-- `anon` holds table-level SELECT, INSERT, UPDATE and REFERENCES on `engineers`,
+-- inherited from the Supabase project bootstrap. `0006_security.sql` revoked the
+-- default execute grant on functions but never swept table privileges, so the
+-- entire engineer directory — names, emails, managers, sites, start dates — sits
+-- behind exactly one RLS policy, on a deployment that is publicly reachable.
+--
+-- RLS is on and no policy reaches `anon`, so nothing is readable in practice today.
+-- This is defence in depth, not an incident. But every table created since 0025 —
+-- `metric_targets`, `metric_target_changes`, both snapshot tables — states the
+-- opposite posture on its own first line: revoke from public and anon, so the grant
+-- and the policy are two independent locks rather than one with a spare. The oldest
+-- and most sensitive table in the schema should not be the one relying on a single
+-- lock.
+--
+-- Why this is its own migration rather than riding along:
+--
+-- It was written inside `0028_tenure_normalisation.sql`, where it was found. It does
+-- not belong there. Reverting tenure normalisation is a plausible thing to want to
+-- do — it changes every senior engineer's score — and a revert must not silently
+-- reopen a security gap as a side effect. Nor should closing this gap require
+-- keeping a scoring change nobody asked to keep. Two unrelated decisions, two
+-- migrations, two independent reverts.
+--
+-- Verified before writing this: nothing in the application reads `engineers` with
+-- the anon key. Data reads go through the service-role client
+-- (`src/lib/supabase/admin.ts`); the anon key is used only for OAuth sign-in and
+-- session refresh, which touch the `auth` schema, not `public`. A signed-in reader
+-- is `authenticated`, whose grant and policy are both untouched here.
+--
+-- To reverse:
+--   grant select, insert, update, references on table engineers to anon;
+--
+-- Deliberately NOT done here: the other ~20 tables `0006` lists are in the same
+-- position. Sweeping all of them is the right follow-up and wants its own migration
+-- with its own verification, table by table, rather than being appended to this one.
+-- =============================================================================
+
+revoke all on table engineers from anon;

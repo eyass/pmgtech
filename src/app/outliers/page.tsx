@@ -33,6 +33,7 @@ import {
   COMPLEXITY_COVERAGE_FLOOR,
   COMPLEXITY_RUBRIC,
   ENGINEER_SCORE_RUBRIC,
+  SCORE_CONFIDENCE_LABEL,
   scoreTone,
   seniorityRank,
   type EngineerOutlier,
@@ -866,9 +867,12 @@ function ComplexityCell({ engineer }: { engineer: EngineerOutlier }) {
 }
 
 function ConfidencePill({ confidence }: { confidence: ScoreConfidence }) {
-  if (confidence === 'high') return <Pill tone="good">solid</Pill>
-  if (confidence === 'thin') return <Pill tone="warn">thin data</Pill>
-  return <Pill tone="warn">no cohort</Pill>
+  // Read from the shared map rather than a local if-chain. The chain fell through to
+  // "no cohort" for anything it did not name, so the tenure work's `partial_window`
+  // would have rendered "no cohort" beside a reason reading "Present for 11 of 90
+  // days" — a pill contradicting the sentence next to it. A map cannot fall through.
+  const { label, tone } = SCORE_CONFIDENCE_LABEL[confidence]
+  return <Pill tone={tone}>{label}</Pill>
 }
 
 /**

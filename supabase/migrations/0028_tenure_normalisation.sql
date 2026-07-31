@@ -618,32 +618,3 @@ revoke all on function engineer_outliers(timestamptz, timestamptz, uuid)  from p
 grant execute on function tenure_presence_floor()                           to authenticated, service_role;
 grant execute on function engineer_outliers(timestamptz, timestamptz, uuid) to authenticated, service_role;
 
--- --- and one lock this file found open ----------------------------------------
---
--- Checked rather than assumed while adding `start_date_source`, because a new
--- column inherits whatever the table already grants. `anon` holds table-level
--- SELECT, INSERT, UPDATE and REFERENCES on `engineers` — 27 columns' worth, and 28
--- after this migration. Those are not from anything in this repo: they are the
--- Supabase project bootstrap's `grant all on all tables in schema public to anon,
--- authenticated`, which predates 0006 and which 0006 never revoked. 0006 enabled
--- RLS and deliberately gave `anon` no select policy, so an unauthenticated caller
--- currently reads nothing — but that leaves the entire engineer directory (names,
--- emails, managers, sites, start dates) behind exactly one policy, on a deployment
--- that is publicly reachable. Every table created since — `metric_targets`,
--- `metric_target_changes`, both snapshot tables — states the opposite posture on
--- its own first line: "revoke all ... from public, anon", grant and policy as two
--- independent locks.
---
--- So the same posture is applied to `engineers` here. It is a tightening, it is
--- wider than the column this migration adds, and it is stated rather than slipped
--- in. Nothing in the app reads this table with the anon key: data reads go through
--- the service-role client (`src/lib/supabase/admin.ts`), and the anon key is used
--- only for OAuth sign-in and session refresh, which touch the `auth` schema. A
--- signed-in reader is `authenticated`, whose grant and policy are both untouched.
---
--- To reverse: `grant select, insert, update, references on table engineers to anon;`
---
--- The other tables 0006 lists are in the same position and are deliberately left
--- alone — a sweep of twenty tables does not belong in a migration about tenure.
-
-revoke all on table engineers from anon;
