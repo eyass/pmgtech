@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { currentUser } from '@/lib/auth'
 import { supabaseAdmin } from '@/lib/supabase/admin'
 import { validateTarget, validateWeight } from '@/lib/targets'
+import { validateStartDate } from '@/lib/tenure'
 
 /**
  * Admin mutations. Every action re-checks admin status server-side — the UI
@@ -90,6 +91,64 @@ export async function toggleEngineerMetrics(formData: FormData): Promise<ActionR
     revalidatePath('/admin')
     revalidatePath('/people')
     return { ok: true, message: include ? 'Included in metrics' : 'Excluded from metrics' }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/**
+ * Set, correct or clear an engineer's employment start date.
+ *
+ * Since `0028_tenure_normalisation.sql` this is a scoring input, not a display
+ * field. `engineer_outliers` divides the counting metrics by the share of the
+ * window the person was employed for, and holds anyone below half a window out of
+ * their cohort's median — so a date here moves that engineer's score *and* every
+ * peer's relative score along with it. Three consequences, all deliberate:
+ *
+ *   1. **`start_date_source` is set to 'manual'**, which is what stops the next
+ *      nightly HiBob sync putting the old value back. Without it the correction
+ *      lasts hours and reverts with nothing on screen to say it happened, which is
+ *      indistinguishable from the feature never having worked. Same mechanism as
+ *      `squad_source`, `seniority_source` and `include_in_metrics_source`.
+ *   2. **Clearing the date is also 'manual'.** "We do not know when they started"
+ *      is a considered answer and gets the same protection as a date; leaving the
+ *      source as 'unknown' would let the sync write HiBob's wrong value straight
+ *      back tomorrow.
+ *   3. **A future date is accepted.** There is a signed-offer row in this directory
+ *      with a start date next month, and 0028 handles it correctly by withholding a
+ *      score rather than scoring zero. What is refused is a date that cannot be a
+ *      start date at all — see `validateStartDate`.
+ */
+export async function setEngineerStartDate(formData: FormData): Promise<ActionResult> {
+  try {
+    await requireAdmin()
+    const engineerId = String(formData.get('engineerId') ?? '')
+    if (!engineerId) throw new Error('Missing engineer')
+
+    const raw = String(formData.get('startDate') ?? '').trim()
+    let startDate: string | null = null
+    if (raw !== '') {
+      const check = validateStartDate(raw)
+      if (!check.ok) throw new Error(check.message)
+      startDate = check.date
+    }
+
+    const { data, error } = await supabaseAdmin()
+      .from('engineers')
+      .update({ start_date: startDate, start_date_source: 'manual' })
+      .eq('id', engineerId)
+      .select('full_name')
+      .single()
+    if (error) throw new Error(error.message)
+    const { full_name: name } = data as { full_name: string }
+
+    revalidateScorePaths()
+    return {
+      ok: true,
+      message: startDate
+        ? `${name} started ${startDate} — set by hand, so HiBob will not overwrite it`
+        : `${name} has no start date — recorded as a deliberate blank, so HiBob will not overwrite it`,
+    }
   } catch (error) {
     return fail(error)
   }
@@ -194,6 +253,20 @@ export async function toggleSquadIgnored(formData: FormData): Promise<ActionResu
     }
   } catch (error) {
     return fail(error)
+  }
+}
+
+/**
+ * A start date moves scores, so the pages that publish one are refreshed.
+ *
+ * Shorter than `revalidateTargetPaths` on purpose: a target is a squad threshold
+ * and reaches /squads, /delivery and /performance, whereas a start date only feeds
+ * `engineer_outliers` and the directory. Refreshing pages a change cannot reach
+ * makes the list stop describing what depends on what.
+ */
+function revalidateScorePaths() {
+  for (const path of ['/admin', '/outliers', '/rankings', '/trust', '/people', '/']) {
+    revalidatePath(path)
   }
 }
 

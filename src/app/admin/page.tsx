@@ -7,6 +7,7 @@ import {
   RunSyncButtons,
   SenioritySelect,
   SquadSelect,
+  StartDateForm,
   ToggleButton,
 } from '@/components/admin-forms'
 import { SyncAlertBanner } from '@/components/coverage'
@@ -27,8 +28,10 @@ import {
   getSyncAlerts,
   getSyncRuns,
   getUnmatchedIdentities,
+  resolvePeriod,
 } from '@/lib/queries'
 import { supabaseAdmin } from '@/lib/supabase/admin'
+import { presence } from '@/lib/tenure'
 
 import {
   createEngineer,
@@ -41,6 +44,7 @@ import {
   setBoardSquad,
   setEngineerSeniority,
   setEngineerSquad,
+  setEngineerStartDate,
   setMetricTarget,
   setProjectSquad,
   toggleEngineerIgnored,
@@ -111,6 +115,17 @@ export default async function AdminPage() {
     membersBySquad.set(engineer.squad_id, (membersBySquad.get(engineer.squad_id) ?? 0) + 1)
   }
   const ignoredCount = engineers.filter((e) => e.is_ignored).length
+
+  // The window the presence preview is read against. 90 days is what /outliers and
+  // /rankings default to, so the "present for n of m days" shown beside a start date
+  // is the same n of m the score was actually divided by.
+  const scoreWindow = resolvePeriod('90d').range
+  const scored = engineers.filter((e) => !e.is_ignored && e.is_active && e.include_in_metrics)
+  const missingStartDates = scored.filter((e) => !e.start_date).length
+  const partialWindows = scored.filter((e) => {
+    const p = presence(e.start_date, scoreWindow.from, scoreWindow.to)
+    return p.known && !p.inCohortMedian
+  }).length
 
   return (
     <div className="space-y-6">
@@ -528,6 +543,9 @@ export default async function AdminPage() {
               <Th>HiBob title</Th>
               <Th>Squad</Th>
               <Th>Level</Th>
+              <Th title="Employment start date. Since migration 0028 this is a scoring input: the counting metrics are divided by the share of the window the person was actually here, and anyone below half a window is left out of their cohort's median.">
+                Start date
+              </Th>
               <Th align="right" title="Whether this person counts towards headcount and per-engineer rates. Their merge requests, reviews and commits count towards their squad either way.">
                 In metrics
               </Th>
@@ -580,6 +598,31 @@ export default async function AdminPage() {
                     current={engineer.seniority_key}
                     levels={levels}
                   />
+                )}
+              </Td>
+              <Td>
+                {readOnly ? (
+                  <div className="text-xs">
+                    <span className="tnum">{engineer.start_date ?? 'not set'}</span>
+                    <div className="text-[11px] text-[var(--color-muted)]">
+                      {startDateNote(engineer.start_date, engineer.start_date_source, scoreWindow)}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <StartDateForm
+                      action={setEngineerStartDate}
+                      engineerId={engineer.id}
+                      name={engineer.display_name ?? engineer.full_name}
+                      current={engineer.start_date}
+                      source={engineer.start_date_source}
+                      windowFrom={scoreWindow.from.toISOString()}
+                      windowTo={scoreWindow.to.toISOString()}
+                    />
+                    <div className="text-[11px] text-[var(--color-muted)]">
+                      {startDateNote(engineer.start_date, engineer.start_date_source, scoreWindow)}
+                    </div>
+                  </div>
                 )}
               </Td>
               <Td align="right">
@@ -655,6 +698,27 @@ export default async function AdminPage() {
             </tr>
           ))}
         </Table>
+        <MetricNote>
+          <strong>Start date</strong>{' '}
+          stopped being a display field at migration 0028. The
+          counting metrics behind an engineer&rsquo;s score — weighted merge requests, issues,
+          reviews given, reverts — are divided by the share of the period they were actually
+          employed for, so eleven days of work is compared with ninety days of work as a rate
+          rather than as a total. Percentages, cycle time and the count of distinct colleagues
+          reviewed for are left alone: the first two have already divided time out, and the third
+          is bounded by the size of the org rather than by the length of the window. Anyone below
+          half a period is scored and labelled but held out of their cohort&rsquo;s median, so a
+          part period cannot drag the number their peers are measured against. A date set here is
+          marked manual and survives every later HiBob sync — including a deliberate blank.{' '}
+          {missingStartDates > 0
+            ? `${missingStartDates} of the ${scored.length} scored engineers ${
+                missingStartDates === 1 ? 'has' : 'have'
+              } no start date, so their presence cannot be established and they are out of the median. `
+            : `All ${scored.length} scored engineers have a start date. `}
+          {partialWindows > 0
+            ? `${partialWindows} ${partialWindows === 1 ? 'is' : 'are'} inside a part period on the 90-day window.`
+            : 'None is inside a part period on the 90-day window.'}
+        </MetricNote>
         <MetricNote>
           <strong>In metrics</strong> controls the denominator, not the data. Managers and
           leadership default to excluded from their HiBob title — an engineering manager who
@@ -840,6 +904,31 @@ export default async function AdminPage() {
       </section>
     </div>
   )
+}
+
+/**
+ * What a start date does to the score, in one line under the input.
+ *
+ * The provenance and the consequence together, because either alone is misleading:
+ * "from HiBob" does not say the person is half-scored, and "present for 11 of 90"
+ * does not say a sync will overwrite the correction you are about to make.
+ */
+function startDateNote(
+  startDate: string | null,
+  source: 'unknown' | 'hibob' | 'manual',
+  window: { from: Date; to: Date },
+): string {
+  if (!startDate) {
+    return source === 'manual'
+      ? 'recorded as unknown by hand — out of the cohort median'
+      : 'missing — presence cannot be established, so they are out of the cohort median'
+  }
+  const p = presence(startDate, window.from, window.to)
+  if (p.notYetPresent) return 'starts after this period — not scored at all'
+  if (!p.inCohortMedian) {
+    return `present ${p.daysPresent} of ${p.windowDays} days — rates scaled up, out of the cohort median`
+  }
+  return `present ${p.daysPresent} of ${p.windowDays} days`
 }
 
 function summarise(stats: Record<string, unknown>): string {

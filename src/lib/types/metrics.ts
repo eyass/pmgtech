@@ -246,6 +246,12 @@ export interface EngineerRow {
   site: string | null
   manager_email: string | null
   start_date: string | null
+  /**
+   * Where `start_date` came from (migration 0028). 'manual' is never overwritten
+   * by the HiBob sync, including when the manual answer is "no date" — see
+   * `src/lib/sync/hibob.ts`.
+   */
+  start_date_source: 'unknown' | 'hibob' | 'manual'
   employment_type: string | null
   is_active: boolean
   include_in_metrics: boolean

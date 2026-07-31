@@ -192,8 +192,35 @@ export const SHAPE_MEANING: Record<Shape, string> = {
  *                rate is really one person's rate
  *  - `no_cohort` fewer than three peers at the level, so the median is nearly the
  *                person themselves
+ *  - `partial_window` (engineers only, `0028_tenure_normalisation.sql`) they were
+ *                not employed for the whole period, or it cannot be shown that they
+ *                were. One state covers both, because both have the same
+ *                consequence — the row is out of the cohort median and sits after
+ *                the ranked set — and `confidence_reason` carries which it is,
+ *                with the actual fraction in it ("Present for 11 of 90 days in this
+ *                period"). It is not a second confidence system: a below-floor row
+ *                is still scored, still labelled here, and still read by everything
+ *                that reads the other three.
  */
-export type ScoreConfidence = 'high' | 'thin' | 'no_cohort'
+export type ScoreConfidence = 'high' | 'thin' | 'no_cohort' | 'partial_window'
+
+/**
+ * What a confidence flag is called on screen, and how loudly.
+ *
+ * Here rather than inside a component because two pages render this pill and a
+ * fourth state added in SQL must not fall through to whichever label a local
+ * `else` branch happens to end on — which is how `partial_window` would currently
+ * read as "no cohort" on /outliers.
+ */
+export const SCORE_CONFIDENCE_LABEL: Record<
+  ScoreConfidence,
+  { label: string; tone: 'good' | 'warn' | 'neutral' }
+> = {
+  high: { label: 'solid', tone: 'good' },
+  thin: { label: 'thin data', tone: 'warn' },
+  no_cohort: { label: 'no cohort', tone: 'warn' },
+  partial_window: { label: 'part period', tone: 'warn' },
+}
 
 /** Whether the score's gap from the cohort is large enough to be worth saying. */
 export type Standing = 'top' | 'bottom' | 'typical' | 'unread'
@@ -264,6 +291,37 @@ export interface EngineerOutlier {
   /** How much of the *org's* work has one. This is what picks the basis. */
   org_sized_mr_pct: number | null
   throughput_basis: ThroughputBasis
+
+  // --- tenure (0028_tenure_normalisation.sql) ---------------------------------
+  //
+  // Added rather than replacing anything: `merged_mrs`, `issues_resolved`,
+  // `reviews_given` and `reverts_authored` above are still the raw facts, and the
+  // four `*_prorated` figures below are what the score was actually computed from.
+  // Both belong on the row, because a score that cannot be reconciled with the
+  // counts printed beside it is unauditable.
+
+  /** From HiBob or set by hand. Null when nobody has ever established one. */
+  start_date: string | null
+  /** Length of the scored window in whole days. */
+  days_in_window: number
+  /** Days of it they were employed for. Null when `start_date` is. */
+  days_present: number | null
+  /** `days_present` as a percentage of `days_in_window`. Null when unknown. */
+  presence_pct: number | null
+  /**
+   * Whether this row helped define its cohort's median and holds a place in the
+   * ranked set. False below `tenure_presence_floor()` (half the window) and false
+   * when the start date is unknown — the score is still produced, but it cannot
+   * move anyone else's, and its rank sits after every row that can.
+   */
+  in_cohort_median: boolean
+  /** How many at this level cleared the floor, which is what the median rests on. */
+  cohort_scored_peers: number
+  /** Throughput units restated as a full-window rate. Null when they had not started. */
+  throughput_units_prorated: number | null
+  issues_resolved_prorated: number | null
+  reviews_given_prorated: number | null
+  reverts_authored_prorated: number | null
 }
 
 export interface SquadOutlier {
@@ -442,13 +500,23 @@ export const METRIC_TARGET_DEFAULTS: Record<MetricTargetKey, MetricTargetDefault
   return out
 })()
 
-/** What each engineer dimension is built from, for the same reason. */
+/**
+ * What each engineer dimension is built from, for the same reason.
+ *
+ * Since `0028_tenure_normalisation.sql` the four counting inputs — weighted merge
+ * requests, issues, reviews given and reverts — are divided by the share of the
+ * window the engineer was actually employed for, so eleven days of work is
+ * compared with ninety days of work as a rate rather than as a total. The
+ * percentages, the cycle-time median and the count of distinct colleagues are not:
+ * see `PRORATION_RULES` in `src/lib/tenure.ts` for which is which and why.
+ */
 export const ENGINEER_SCORE_RUBRIC = {
   throughput:
-    'Complexity-weighted merge requests (×2) and resolved issues (×1), against the level median',
+    'Complexity-weighted merge requests (×2) and resolved issues (×1), per full window of employment, against the level median',
   flow: 'Median cycle time, against the level median',
-  quality: 'Review coverage received (×2), large-MR share (×1) and reverts authored (×1)',
-  collaboration: 'Reviews given (×2) and colleagues reviewed for (×1)',
+  quality:
+    'Review coverage received (×2), large-MR share (×1) and reverts authored per full window (×1)',
+  collaboration: 'Reviews given per full window (×2) and colleagues reviewed for (×1)',
 } as const
 
 /** Colour a 0-100 score. Deliberately wide in the middle: 50 is the median, not a fail. */

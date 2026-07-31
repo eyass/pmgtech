@@ -6,6 +6,7 @@ import { useFormStatus } from 'react-dom'
 import type { ActionResult } from '@/app/admin/actions'
 import { groupEngineerOptions, shouldGroup, type EngineerOption } from '@/lib/engineer-options'
 import { validateTarget, type ResolvedTarget } from '@/lib/targets'
+import { presence, validateStartDate } from '@/lib/tenure'
 
 /**
  * Thin client wrappers around the admin server actions.
@@ -321,6 +322,126 @@ export function MetricTargetForm({
       <div className="text-xs md:col-span-2">
         {refusal ? <span className="text-red-600">{refusal}</span> : <Status result={result} />}
       </div>
+    </form>
+  )
+}
+
+/**
+ * Set or correct one engineer's employment start date.
+ *
+ * The second control on this screen whose blast radius is other people. Since
+ * migration 0028 a start date decides how much of the window an engineer's counting
+ * metrics are divided by, and whether their row is allowed into their cohort's
+ * median at all — so an edit here moves that person's score *and* shifts the median
+ * every peer at their level is measured against. `ToggleButton`'s `confirm` exists
+ * for exactly this shape of thing (ignoring a squad takes its people with it and
+ * nothing on the row says so), and `MetricTargetForm` already applies it to an edit
+ * with an input rather than a fixed payload. This does the same, with three
+ * particulars:
+ *
+ *   - the confirmation states the before, the after and the presence each implies,
+ *     because "90 of 90 days becomes 11 of 90" is the consequence and the date on
+ *     its own is not;
+ *   - Save is disabled until the value actually differs, so the dialog never fires
+ *     on a no-op — a confirmation people learn to click through is worse than none;
+ *   - the date is validated client-side against the same rule the server action
+ *     uses, so an impossible date is refused without a round trip.
+ *
+ * A HiBob-sourced date is editable, not read-only. The point is to correct a wrong
+ * one as much as to fill a missing one, and saving pins it as manual so the next
+ * sync leaves the correction alone.
+ */
+export function StartDateForm({
+  action,
+  engineerId,
+  name,
+  current,
+  source,
+  windowFrom,
+  windowTo,
+}: {
+  action: Action
+  engineerId: string
+  name: string
+  current: string | null
+  source: 'unknown' | 'hibob' | 'manual'
+  /** The window presence is previewed against — the 90 days the scores are read over. */
+  windowFrom: string
+  windowTo: string
+}) {
+  const [result, formAction] = useAction(action)
+  const [value, setValue] = useState(current ?? '')
+  const [refusal, setRefusal] = useState<string | null>(null)
+
+  const normalised = value.trim()
+  const changed = normalised !== (current ?? '')
+
+  const describe = (date: string | null) => {
+    if (!date) return 'no start date — presence unknown, held out of the cohort median'
+    const p = presence(date, windowFrom, windowTo)
+    if (p.notYetPresent) return 'not started yet in this window — no score at all'
+    return `present ${p.daysPresent} of ${p.windowDays} days${
+      p.inCohortMedian ? '' : ', held out of the cohort median'
+    }`
+  }
+
+  return (
+    <form
+      action={formAction}
+      onSubmit={(event) => {
+        if (normalised !== '') {
+          const check = validateStartDate(normalised)
+          if (!check.ok) {
+            setRefusal(check.message)
+            event.preventDefault()
+            return
+          }
+        }
+        setRefusal(null)
+        const lines = [
+          `Change ${name}'s start date?`,
+          '',
+          `${current ?? 'none'} → ${normalised === '' ? 'none' : normalised}`,
+          `${describe(current)}`,
+          `→ ${describe(normalised === '' ? null : normalised)}`,
+          '',
+          'This moves their score, and it moves the median every engineer at their level is scored against — including people who have not changed at all.',
+          'Saving marks the date as set by hand, so the next HiBob sync will leave it alone.',
+        ]
+        if (!window.confirm(lines.join('\n'))) event.preventDefault()
+      }}
+      className="flex flex-wrap items-center gap-2"
+    >
+      <input type="hidden" name="engineerId" value={engineerId} />
+      <input
+        name="startDate"
+        type="date"
+        value={value}
+        onChange={(event) => setValue(event.currentTarget.value)}
+        aria-label={`Start date for ${name}`}
+        className="tnum rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+      />
+      <SubmitButton
+        label="Save"
+        title={
+          changed
+            ? 'Moves their score and their whole cohort’s median'
+            : 'Nothing has changed yet'
+        }
+        disabled={!changed}
+      />
+      <span className="text-[11px] text-[var(--color-muted)]">
+        {source === 'manual'
+          ? 'set by hand'
+          : source === 'hibob'
+            ? 'from HiBob'
+            : 'no source on record'}
+      </span>
+      {refusal ? (
+        <span className="text-xs text-red-600">{refusal}</span>
+      ) : (
+        <Status result={result} />
+      )}
     </form>
   )
 }

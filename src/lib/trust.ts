@@ -375,10 +375,22 @@ export interface CohortRead {
   key: string
   label: string
   people: number
-  /** False below `MIN_COHORT`: there is no median for the cohort to be scored on. */
+  /**
+   * How many of `people` actually defined the median. Since
+   * `0028_tenure_normalisation.sql` an engineer below half a window of employment
+   * is scored but left out of it, so a cohort of nine can rest on eight.
+   */
+  scoredPeople: number
+  /**
+   * False below `MIN_COHORT`, counted on `scoredPeople` rather than on `people` —
+   * three peers on paper of whom one is eleven days old is a median over two, and
+   * that is the number the guard is about.
+   */
   hasMedian: boolean
   thin: number
   noCohort: number
+  /** Scored but out of the median: a partial window, or a start date nobody has. */
+  partialWindow: number
 }
 
 export interface ScoredRead {
@@ -401,7 +413,12 @@ export interface ScoredRead {
  * prints as "#n of m at level", so a cohort here is the same cohort there.
  */
 export function readScored(rows: EngineerOutlier[]): ScoredRead {
-  const byConfidence: Record<ScoreConfidence, number> = { high: 0, thin: 0, no_cohort: 0 }
+  const byConfidence: Record<ScoreConfidence, number> = {
+    high: 0,
+    thin: 0,
+    no_cohort: 0,
+    partial_window: 0,
+  }
   const cohorts = new Map<string, CohortRead>()
 
   for (const row of rows) {
@@ -412,12 +429,15 @@ export function readScored(rows: EngineerOutlier[]): ScoredRead {
       key: row.seniority_key,
       label: row.seniority_label ?? row.seniority_key,
       people: row.peers_at_level,
-      hasMedian: row.peers_at_level >= MIN_COHORT,
+      scoredPeople: row.cohort_scored_peers,
+      hasMedian: row.cohort_scored_peers >= MIN_COHORT,
       thin: 0,
       noCohort: 0,
+      partialWindow: 0,
     }
     if (row.score_confidence === 'thin') cohort.thin += 1
     if (row.score_confidence === 'no_cohort') cohort.noCohort += 1
+    if (row.score_confidence === 'partial_window') cohort.partialWindow += 1
     cohorts.set(row.seniority_key, cohort)
   }
 
