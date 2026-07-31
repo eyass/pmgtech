@@ -22,7 +22,9 @@ import type {
   EngineerProfile,
   KnowledgeConcentrationRow,
   PerformanceDimension,
+  ScoreConfidence,
   SquadOutlier,
+  Standing,
   TeamHealth,
 } from '@/lib/types/performance'
 import type {
@@ -375,6 +377,251 @@ export async function getPerformanceDimensions(): Promise<PerformanceDimension[]
     .order('sort_order')
   if (error) throw new Error(`Failed to load dimensions: ${error.message}`)
   return (data ?? []) as PerformanceDimension[]
+}
+
+// --- score snapshots (0025_score_snapshots.sql) ------------------------------
+//
+// The one family of reads on this page that does **not** take a `DateRange`, and the
+// difference is the whole point. Every other helper here passes `rangeArgs` into an
+// RPC that recomputes a score from the current tables through the current formula. A
+// snapshot was computed once, under whatever formula was live that day, and stored.
+// Passing a range would filter captures by the window they measured, which is not the
+// question a trend asks — so these take a `PeriodKey` instead, and it is the same key
+// the page's period picker resolves. A '7d' score and a '90d' score are different
+// measurements of the same subject and must never land in one line, which is exactly
+// what `period_key` on the table is for.
+
+/** Rows per capture day to allow for when fetching a bounded window of history. */
+const SNAPSHOT_ROWS_PER_CAPTURE = 64
+
+const ENGINEER_SNAPSHOT_COLUMNS =
+  'engineer_id, period_key, captured_for, definition_version, score, throughput_score, flow_score, quality_score, collaboration_score, rank_in_org, rank_at_level, peers_at_level, seniority_key, squad_id, score_confidence, confidence_reason, signals_above, signals_below, signals_read, net, standing, throughput_basis, window_from, window_to, captured_at'
+
+const SQUAD_SNAPSHOT_COLUMNS =
+  'squad_id, period_key, captured_for, definition_version, score, throughput_score, flow_score, quality_score, collaboration_score, rank_in_org, headcount, score_confidence, confidence_reason, throughput_basis, window_from, window_to, captured_at'
+
+/**
+ * A stored engineer score, with the name resolved.
+ *
+ * `definition_version` is on every row and is never dropped, defaulted or
+ * normalised. It is the only thing that makes two of these rows comparable or not,
+ * so a reader that simplified the shape by leaving it out would hand the UI a series
+ * it cannot tell apart from a single continuous measurement — which is precisely the
+ * failure the column was added to prevent.
+ */
+export interface EngineerScoreSnapshot {
+  engineer_id: string
+  full_name: string
+  period_key: string
+  captured_for: string
+  definition_version: string
+  score: number | null
+  throughput_score: number | null
+  flow_score: number | null
+  quality_score: number | null
+  collaboration_score: number | null
+  rank_in_org: number | null
+  rank_at_level: number | null
+  peers_at_level: number | null
+  seniority_key: string | null
+  squad_id: string | null
+  score_confidence: ScoreConfidence | null
+  confidence_reason: string | null
+  signals_above: number | null
+  signals_below: number | null
+  signals_read: number | null
+  net: number | null
+  standing: Standing | null
+  throughput_basis: string | null
+  window_from: string
+  window_to: string
+  captured_at: string
+}
+
+export interface SquadScoreSnapshot {
+  squad_id: string
+  squad_key: string
+  squad_name: string
+  period_key: string
+  captured_for: string
+  definition_version: string
+  score: number | null
+  throughput_score: number | null
+  flow_score: number | null
+  quality_score: number | null
+  collaboration_score: number | null
+  rank_in_org: number | null
+  headcount: number | null
+  score_confidence: ScoreConfidence | null
+  confidence_reason: string | null
+  throughput_basis: string | null
+  window_from: string
+  window_to: string
+  captured_at: string
+}
+
+/**
+ * Postgres `numeric` arrives from PostgREST as a string often enough to be worth
+ * handling every time — `MetricTargetRow` in `lib/targets.ts` types it the same way
+ * for the same reason. Anything unparseable becomes null rather than NaN or zero: a
+ * score that cannot be read is not a score of nothing.
+ */
+function snapshotNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** A snapshot row straight off PostgREST, before the numerics are normalised. */
+type RawSnapshotRow = Record<string, unknown> & { captured_for: string }
+
+/**
+ * Keep only the most recent `captures` capture days, and return them oldest first.
+ *
+ * Trimming by *day* rather than by row: a capture is one run over the whole org, so
+ * "the last twelve captures" has to mean twelve days of everybody rather than the
+ * twelve newest rows, which would be most of one day.
+ */
+function newestCaptures<T extends { captured_for: string }>(rows: T[], captures: number): T[] {
+  const days = [...new Set(rows.map((r) => r.captured_for))].sort().slice(-captures)
+  const keep = new Set(days)
+  return rows
+    .filter((r) => keep.has(r.captured_for))
+    .sort((a, b) => (a.captured_for < b.captured_for ? -1 : a.captured_for > b.captured_for ? 1 : 0))
+}
+
+/**
+ * Stored engineer scores for one period, oldest capture first.
+ *
+ * The row cap is `captures × SNAPSHOT_ROWS_PER_CAPTURE`, which is generous against an
+ * org of fourteen. If it were ever hit, the fetch is ordered newest-first, so the
+ * result loses the *oldest* captures rather than the newest — a shorter history, never
+ * a stale one, and never a hole in the middle that a line would be drawn straight
+ * through.
+ */
+export async function getEngineerScoreHistory(
+  periodKey: PeriodKey,
+  captures = 12,
+): Promise<EngineerScoreSnapshot[]> {
+  const db = supabaseAdmin()
+  const [snapshots, engineers] = await Promise.all([
+    db
+      .from('engineer_score_snapshots')
+      .select(ENGINEER_SNAPSHOT_COLUMNS)
+      .eq('period_key', periodKey)
+      .order('captured_for', { ascending: false })
+      .limit(captures * SNAPSHOT_ROWS_PER_CAPTURE),
+    db.from('engineers').select('id, full_name').eq('is_ignored', false),
+  ])
+
+  if (snapshots.error) {
+    throw new Error(`Failed to load engineer score history: ${snapshots.error.message}`)
+  }
+  if (engineers.error) {
+    throw new Error(`Failed to load engineer names: ${engineers.error.message}`)
+  }
+
+  const names = new Map(
+    ((engineers.data ?? []) as { id: string; full_name: string }[]).map((e) => [e.id, e.full_name]),
+  )
+
+  const rows = newestCaptures((snapshots.data ?? []) as unknown as RawSnapshotRow[], captures)
+
+  // A snapshot of somebody since marked ignored is dropped rather than drawn under
+  // their id: the aggregation RPCs exclude ignored people, so keeping their line here
+  // would put somebody on the chart who is on no other page.
+  return rows.flatMap((row) => {
+    const engineerId = row.engineer_id as string
+    const fullName = names.get(engineerId)
+    if (!fullName) return []
+    return [
+      {
+        engineer_id: engineerId,
+        full_name: fullName,
+        period_key: row.period_key as string,
+        captured_for: row.captured_for as string,
+        definition_version: row.definition_version as string,
+        score: snapshotNumber(row.score),
+        throughput_score: snapshotNumber(row.throughput_score),
+        flow_score: snapshotNumber(row.flow_score),
+        quality_score: snapshotNumber(row.quality_score),
+        collaboration_score: snapshotNumber(row.collaboration_score),
+        rank_in_org: snapshotNumber(row.rank_in_org),
+        rank_at_level: snapshotNumber(row.rank_at_level),
+        peers_at_level: snapshotNumber(row.peers_at_level),
+        seniority_key: (row.seniority_key as string | null) ?? null,
+        squad_id: (row.squad_id as string | null) ?? null,
+        score_confidence: (row.score_confidence as ScoreConfidence | null) ?? null,
+        confidence_reason: (row.confidence_reason as string | null) ?? null,
+        signals_above: snapshotNumber(row.signals_above),
+        signals_below: snapshotNumber(row.signals_below),
+        signals_read: snapshotNumber(row.signals_read),
+        net: snapshotNumber(row.net),
+        standing: (row.standing as Standing | null) ?? null,
+        throughput_basis: (row.throughput_basis as string | null) ?? null,
+        window_from: row.window_from as string,
+        window_to: row.window_to as string,
+        captured_at: row.captured_at as string,
+      },
+    ]
+  })
+}
+
+/** Stored squad scores for one period, oldest capture first. Same rules as above. */
+export async function getSquadScoreHistory(
+  periodKey: PeriodKey,
+  captures = 12,
+): Promise<SquadScoreSnapshot[]> {
+  const db = supabaseAdmin()
+  const [snapshots, squads] = await Promise.all([
+    db
+      .from('squad_score_snapshots')
+      .select(SQUAD_SNAPSHOT_COLUMNS)
+      .eq('period_key', periodKey)
+      .order('captured_for', { ascending: false })
+      .limit(captures * SNAPSHOT_ROWS_PER_CAPTURE),
+    db.from('squads').select('id, key, name').eq('is_ignored', false),
+  ])
+
+  if (snapshots.error) {
+    throw new Error(`Failed to load squad score history: ${snapshots.error.message}`)
+  }
+  if (squads.error) throw new Error(`Failed to load squad names: ${squads.error.message}`)
+
+  const known = new Map(
+    ((squads.data ?? []) as { id: string; key: string; name: string }[]).map((s) => [s.id, s]),
+  )
+
+  const rows = newestCaptures((snapshots.data ?? []) as unknown as RawSnapshotRow[], captures)
+
+  return rows.flatMap((row) => {
+    const squadId = row.squad_id as string
+    const squad = known.get(squadId)
+    if (!squad) return []
+    return [
+      {
+        squad_id: squadId,
+        squad_key: squad.key,
+        squad_name: squad.name,
+        period_key: row.period_key as string,
+        captured_for: row.captured_for as string,
+        definition_version: row.definition_version as string,
+        score: snapshotNumber(row.score),
+        throughput_score: snapshotNumber(row.throughput_score),
+        flow_score: snapshotNumber(row.flow_score),
+        quality_score: snapshotNumber(row.quality_score),
+        collaboration_score: snapshotNumber(row.collaboration_score),
+        rank_in_org: snapshotNumber(row.rank_in_org),
+        headcount: snapshotNumber(row.headcount),
+        score_confidence: (row.score_confidence as ScoreConfidence | null) ?? null,
+        confidence_reason: (row.confidence_reason as string | null) ?? null,
+        throughput_basis: (row.throughput_basis as string | null) ?? null,
+        window_from: row.window_from as string,
+        window_to: row.window_to as string,
+        captured_at: row.captured_at as string,
+      },
+    ]
+  })
 }
 
 /** The current review period: calendar quarter containing `on`. */

@@ -7,13 +7,24 @@ type CookiesToSet = { name: string; value: string; options?: CookieOptions }[]
  * Refreshes the Supabase session cookie and gates the app.
  *
  * Two things must stay true here:
- *  - The cron path is excluded, because Vercel Cron authenticates with a bearer
+ *  - The cron paths are excluded, because Vercel Cron authenticates with a bearer
  *    token and has no session cookie.
  *  - The domain check happens here as well as in the pages, so an unauthorised
  *    account cannot reach a route handler by guessing its URL.
+ *
+ * **Excluded from the session gate is not the same as open.** Every path in this
+ * list authorises for itself: `/api/sync` and `/api/snapshots` both call
+ * `authoriseSync` as their first statement and answer 401 to an anonymous caller,
+ * 403 to a signed-in non-admin, and 503 when `CRON_SECRET` is unset. What the
+ * exclusion removes is the *redirect*, which is the thing a cron cannot survive —
+ * a bearer-token request that gets 307'd to /login is answered 200 by the login
+ * page, so the scheduler records a success and the job silently never runs. That
+ * is exactly how the score capture was lost the first time: it is easy to add a
+ * route and a cron entry, notice nothing, and find out weeks later that there is
+ * no history. Any new cron target has to be added here as well.
  */
 
-const PUBLIC_PATHS = ['/login', '/auth/callback', '/auth/signout', '/api/sync']
+const PUBLIC_PATHS = ['/login', '/auth/callback', '/auth/signout', '/api/sync', '/api/snapshots']
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
