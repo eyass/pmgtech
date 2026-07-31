@@ -173,7 +173,17 @@ scored as (
 
     (select round(sum(w * v) / nullif(sum(w), 0), 1)
        from unnest(
-         array[1, 1]::numeric[],
+         -- Looked up rather than left as a literal array[1, 1]. 0027 stores an
+         -- editable weight for both of these, and its confirmation dialog tells the
+         -- admin that moving one moves every squad's score. Reading the thresholds
+         -- from the table while ignoring the weights beside them would make that
+         -- promise false for exactly two of the thirteen controls — the quietest
+         -- kind of wrong, because the number changes in the admin screen and
+         -- nowhere else. Both seed at 1, so day-one behaviour is unchanged.
+         array[
+           metric_target_weight('change_failure_pct', 1),
+           metric_target_weight('mttr_hours', 1)
+         ],
          array[
            score_vs_metric_target('change_failure_pct', b.change_failure_pct),
            score_vs_metric_target('mttr_hours',         b.mttr_hours)
