@@ -154,7 +154,7 @@ export function getAttentionList(squadId?: string, limit = 25) {
 const SQUAD_COLUMNS = 'id, key, name, description, colour, sort_order, is_active, is_ignored'
 
 const ENGINEER_COLUMNS =
-  'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, employment_type, is_active, include_in_metrics, include_in_metrics_source, seniority_key, seniority_source, squad_id, squad_source, hibob_id, is_ignored, ignored_source'
+  'id, email, full_name, display_name, avatar_url, job_title, department, site, manager_email, start_date, start_date_source, employment_type, is_active, include_in_metrics, include_in_metrics_source, seniority_key, seniority_source, squad_id, squad_source, hibob_id, is_ignored, ignored_source'
 
 export async function getSquads(): Promise<SquadRow[]> {
   const { data, error } = await supabaseAdmin()

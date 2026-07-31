@@ -322,19 +322,68 @@ function outlier(over: Partial<EngineerOutlier>): EngineerOutlier {
     sized_mr_pct: 100,
     org_sized_mr_pct: 100,
     throughput_basis: 'complexity',
+    // Tenure (0028). The fixture engineer is full-window on purpose: that is the
+    // shape almost every row has, and it is the shape whose score must not have
+    // moved. Presence cases are exercised in `tenure.test.ts`.
+    start_date: '2021-01-01',
+    days_in_window: 90,
+    days_present: 90,
+    presence_pct: 100,
+    in_cohort_median: true,
+    cohort_scored_peers: 9,
+    throughput_units_prorated: 40,
+    issues_resolved_prorated: 30,
+    reviews_given_prorated: 60,
+    reverts_authored_prorated: 0,
     ...over,
   }
 }
 
 describe('readScored', () => {
   it('marks a level below three as having no median', () => {
+    const staff = {
+      seniority_key: 'staff',
+      seniority_label: 'Staff',
+      peers_at_level: 2,
+      cohort_scored_peers: 2,
+      score_confidence: 'no_cohort' as const,
+    }
     const read = readScored([
-      outlier({ engineer_id: 'a', seniority_key: 'staff', seniority_label: 'Staff', peers_at_level: 2, score_confidence: 'no_cohort' }),
-      outlier({ engineer_id: 'b', seniority_key: 'staff', seniority_label: 'Staff', peers_at_level: 2, score_confidence: 'no_cohort' }),
+      outlier({ engineer_id: 'a', ...staff }),
+      outlier({ engineer_id: 'b', ...staff }),
     ])
     assert.equal(read.cohorts.length, 1)
     assert.equal(read.cohorts[0].hasMedian, false)
     assert.equal(read.cohorts[0].noCohort, 2)
+  })
+
+  /**
+   * The guard counts the people who actually defined the median, not the people at
+   * the level. Three seniors of whom one joined last week is a median over two, and
+   * a row saying "has a median: yes" there would be the exact reassurance 0028 was
+   * written to remove.
+   */
+  it('counts the median on the peers who cleared the tenure floor, not on headcount', () => {
+    const read = readScored([
+      outlier({ engineer_id: 'a', peers_at_level: 3, cohort_scored_peers: 2 }),
+      outlier({ engineer_id: 'b', peers_at_level: 3, cohort_scored_peers: 2 }),
+      outlier({
+        engineer_id: 'c',
+        peers_at_level: 3,
+        cohort_scored_peers: 2,
+        in_cohort_median: false,
+        days_present: 11,
+        presence_pct: 12.2,
+        score_confidence: 'partial_window',
+        confidence_reason: 'Present for 11 of 90 days in this period',
+      }),
+    ])
+    assert.equal(read.cohorts.length, 1)
+    assert.equal(read.cohorts[0].people, 3)
+    assert.equal(read.cohorts[0].scoredPeople, 2)
+    assert.equal(read.cohorts[0].hasMedian, false)
+    assert.equal(read.cohorts[0].partialWindow, 1)
+    assert.equal(read.byConfidence.partial_window, 1)
   })
 
   it('takes the throughput basis off the rows rather than deciding it again', () => {

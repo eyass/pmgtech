@@ -504,6 +504,12 @@ export function TrustReport({
             <>
               <Th>Level</Th>
               <Th align="right">People at level</Th>
+              <Th
+                align="right"
+                title="How many of them were employed for enough of the window to help define the median. Since 0028 anyone below half the period is scored but left out of it."
+              >
+                In the median
+              </Th>
               <Th>Has a median?</Th>
               <Th>Scores to discount</Th>
             </>
@@ -515,6 +521,9 @@ export function TrustReport({
               <Td align="right" numeric>
                 {nf(cohort.people)}
               </Td>
+              <Td align="right" numeric>
+                {nf(cohort.scoredPeople)}
+              </Td>
               <Td>
                 {cohort.hasMedian ? (
                   <Pill tone="good">yes</Pill>
@@ -523,11 +532,14 @@ export function TrustReport({
                 )}
               </Td>
               <Td className="text-xs text-[var(--color-muted)]">
-                {cohort.thin === 0 && cohort.noCohort === 0
+                {cohort.thin === 0 && cohort.noCohort === 0 && cohort.partialWindow === 0
                   ? 'None — every score here rests on enough work'
                   : [
                       cohort.thin > 0 ? `${nf(cohort.thin)} on thin data` : null,
                       cohort.noCohort > 0 ? `${nf(cohort.noCohort)} with no cohort` : null,
+                      cohort.partialWindow > 0
+                        ? `${nf(cohort.partialWindow)} on a part period`
+                        : null,
                     ]
                       .filter(Boolean)
                       .join(', ')}
@@ -557,7 +569,17 @@ export function TrustReport({
           <Link href="/outliers" className="underline">
             the confidence column on Outliers
           </Link>{' '}
-          carries the reason on the row itself.
+          carries the reason on the row itself.{' '}
+          {scored.byConfidence.partial_window > 0 ? (
+            <>
+              {nf(scored.byConfidence.partial_window)}{' '}
+              {scored.byConfidence.partial_window === 1 ? 'engineer was' : 'engineers were'} not
+              employed for the whole window, or has no start date on record. Their counting metrics
+              are scaled to a full window so eleven days of work is not compared with ninety, and
+              they are held out of their cohort&rsquo;s median so a part period cannot move their
+              peers&rsquo; scores.
+            </>
+          ) : null}
         </MetricNote>
       </section>
 

@@ -8,8 +8,10 @@ import { SyncContext, type SyncMode, type SyncTrigger } from '@/lib/sync/runner'
  * are, which squad they sit in, whether they are still employed.
  *
  * Rules that matter:
- *  - Manual overrides win. If someone set a squad or seniority by hand in the
- *    admin screen, HiBob does not overwrite it on the next run.
+ *  - Manual overrides win. If someone set a squad, seniority, metric inclusion or
+ *    start date by hand in the admin screen, HiBob does not overwrite it on the
+ *    next run. Without that, a correction lasts until the next nightly sync and
+ *    reverts silently, which looks exactly like the feature not working.
  *  - Non-engineering departments are skipped so the directory stays the eng org.
  *  - Managers and leadership default out of per-engineer rates (include_in_metrics),
  *    which changes the denominator only — their own work still counts. See 0017.
@@ -58,6 +60,7 @@ export async function syncHiBob(
       const keepManualSquad = prior?.squad_source === 'manual'
       const keepManualSeniority = prior?.seniority_source === 'manual'
       const keepManualMetrics = prior?.include_in_metrics_source === 'manual'
+      const keepManualStartDate = prior?.start_date_source === 'manual'
 
       const row: Record<string, unknown> = {
         hibob_id: person.hibobId,
@@ -68,9 +71,21 @@ export async function syncHiBob(
         department: person.department,
         site: person.site,
         manager_email: person.managerEmail,
-        start_date: person.startDate,
         employment_type: person.employmentType,
         is_active: person.isActive,
+      }
+
+      // Start date drives the tenure normalisation in migration 0028 — a wrong or
+      // missing one moves the person's score and their whole cohort's median — so a
+      // hand-set value is protected the same way squad, level and metric inclusion
+      // already are. A manual row with a null date is a deliberate "we do not know"
+      // and is protected too, which is why this branches on the source rather than
+      // on whether a date is present.
+      if (!keepManualStartDate) {
+        row.start_date = person.startDate
+        // No date from HiBob is not a provenance. Recording 'hibob' for a null would
+        // let a later run's real date look like an overwrite of a considered answer.
+        row.start_date_source = person.startDate ? 'hibob' : 'unknown'
       }
 
       if (!keepManualSquad && derivedSquadId) {
@@ -176,7 +191,7 @@ async function loadExistingEngineers(ctx: SyncContext) {
   const { data, error } = await ctx.db
     .from('engineers')
     .select(
-      'id, email, hibob_id, squad_id, squad_source, seniority_source, include_in_metrics_source',
+      'id, email, hibob_id, squad_id, squad_source, seniority_source, include_in_metrics_source, start_date_source',
     )
   if (error) throw new Error(`Failed to load engineers: ${error.message}`)
 
@@ -188,6 +203,7 @@ async function loadExistingEngineers(ctx: SyncContext) {
     squad_source: string
     seniority_source: string
     include_in_metrics_source: string
+    start_date_source: string
   }
 
   const byEmail = new Map<string, Row>()
