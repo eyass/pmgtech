@@ -46,8 +46,10 @@ describe('the confidence-to-mark map', () => {
   })
 
   it('says the consequence of a part period, not just the cause', () => {
-    assert.match(CONFIDENCE_MARK_MEANING.partial_window, /left out of the cohort median/)
-    assert.match(CONFIDENCE_MARK_MEANING.partial_window, /still ranked/)
+    // "Joined recently" is the cause and is not what a reader needs. The consequence
+    // is that they are ranked against a median they are not part of.
+    assert.match(CONFIDENCE_MARK_MEANING.partial_window, /ranked/)
+    assert.match(CONFIDENCE_MARK_MEANING.partial_window, /not in the cohort median/)
   })
 
   it('only calls a score solid when it is', () => {
@@ -110,10 +112,30 @@ describe('the legend', () => {
 
   it('drops rows with no flag rather than inventing a state for them', () => {
     assert.deepEqual(confidenceStates(rows(null, null)), [])
-    assert.equal(confidenceStates(rows('high', null)).length, 1)
+    // A null beside a thin flag leaves one state, not two: the null is not a state.
+    assert.deepEqual(
+      confidenceStates(rows('thin', null)).map((s) => s.count),
+      [1],
+    )
   })
 
   it('is empty for an empty chart', () => {
     assert.deepEqual(confidenceStates([]), [])
+  })
+
+  it('says nothing when every mark on the chart is the same solid one', () => {
+    // A one-row legend reading "solid (13)" distinguishes nothing and is furniture.
+    assert.deepEqual(confidenceStates(rows('high', 'high', 'high')), [])
+  })
+
+  it('still speaks up when every mark is the same caveated one', () => {
+    // "Every score here rests on thin data" needs saying whether or not there is a
+    // solid mark on the chart to contrast it against.
+    const states = confidenceStates(rows('thin', 'thin'))
+    assert.deepEqual(
+      states.map((s) => s.confidence),
+      ['thin'],
+    )
+    assert.equal(confidenceStates(rows('partial_window')).length, 1)
   })
 })

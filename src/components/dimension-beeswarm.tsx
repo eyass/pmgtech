@@ -320,7 +320,7 @@ export function DimensionBeeswarm({ engineers }: { engineers: DimensionBeeswarmE
                   <ConfidenceDot
                     cx={cx}
                     cy={cy}
-                    r={5.5}
+                    r={4.5}
                     mark={confidenceMark(m.engineer.confidence)}
                     opacity={dim ? 0.3 : 1}
                   />

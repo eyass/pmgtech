@@ -32,6 +32,13 @@ export function ConfidenceDot({
 }: {
   cx: number
   cy: number
+  /**
+   * The circle's radius, and for the two outlined marks the ring's *centreline* —
+   * the 2px stroke straddles it, exactly as the hand-written circles these replaced
+   * did. Keeping that meaning rather than "outer extent" is deliberate: three charts
+   * had their dot sizes and beeswarm gaps tuned against it, and redefining the
+   * radius would have quietly grown every solid dot on the page by a pixel.
+   */
   r: number
   mark: ConfidenceMark
   colour?: string
@@ -43,14 +50,11 @@ export function ConfidenceDot({
     return <circle cx={cx} cy={cy} r={r} fill={colour} opacity={opacity} />
   }
 
-  // The ring is inset by half its own width so the drawn edge lands on `r` rather
-  // than a pixel outside it — otherwise a hollow dot reads as larger than a solid
-  // one at the same radius, which is exactly backwards.
   const ring = (
     <circle
       cx={cx}
       cy={cy}
-      r={r - 1}
+      r={r}
       fill={hollowFill}
       stroke={colour}
       strokeWidth={2}
@@ -60,11 +64,13 @@ export function ConfidenceDot({
 
   if (mark === 'hollow') return ring
 
-  const inner = r - 2
+  // The half disc runs out to the ring's centreline so its curved edge tucks under
+  // the inner half of the stroke. Stopping at the stroke's inner edge instead left a
+  // white crescent that read as a rendering fault rather than as half a dot.
   return (
     <g opacity={opacity}>
       {ring}
-      <path d={`M ${cx} ${cy - inner} A ${inner} ${inner} 0 0 1 ${cx} ${cy + inner} Z`} fill={colour} />
+      <path d={`M ${cx} ${cy - r} A ${r} ${r} 0 0 1 ${cx} ${cy + r} Z`} fill={colour} />
     </g>
   )
 }

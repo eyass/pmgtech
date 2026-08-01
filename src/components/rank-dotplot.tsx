@@ -326,7 +326,7 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
               <ConfidenceDot
                 cx={px(row.score)}
                 cy={cy}
-                r={5.5}
+                r={4.5}
                 mark={confidenceMark(row.confidence)}
                 opacity={dim ? 0.35 : 1}
               />

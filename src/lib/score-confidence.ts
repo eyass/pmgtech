@@ -56,11 +56,10 @@ export const SCORE_CONFIDENCE_MARK: Record<ScoreConfidence, ConfidenceMark> = {
  * median they are not part of".
  */
 export const CONFIDENCE_MARK_MEANING: Record<ScoreConfidence, string> = {
-  high: 'Enough work behind the score, in a cohort big enough to have a median',
-  thin: 'Too little work behind the score — placement is indicative',
-  no_cohort: 'Fewer than three peers at this level — placement is indicative',
-  partial_window:
-    'Here for part of the period — still ranked, but left out of the cohort median they are ranked against',
+  high: 'Solid — enough work, in a cohort with a median',
+  thin: 'Thin data — placement is indicative',
+  no_cohort: 'No cohort — fewer than three peers at this level',
+  partial_window: 'Part period — ranked, but not in the cohort median they are ranked against',
 }
 
 /** Null confidence is treated as unknown, which is a caveat, not a clean score. */
@@ -101,7 +100,15 @@ export function confidenceStates(
     if (!flag) continue
     counts.set(flag, (counts.get(flag) ?? 0) + 1)
   }
-  return STATE_ORDER.filter((c) => (counts.get(c) ?? 0) > 0).map((confidence) => ({
+  const present = STATE_ORDER.filter((c) => (counts.get(c) ?? 0) > 0)
+
+  // A legend whose only entry is "solid" distinguishes nothing — every mark on the
+  // chart is the same mark, and the row is pure furniture. Any *other* single state
+  // is kept, because "every score here rests on thin data" is a caveat the reader
+  // needs whether or not there is something to contrast it with.
+  if (present.length === 1 && present[0] === 'high') return []
+
+  return present.map((confidence) => ({
     confidence,
     label: SCORE_CONFIDENCE_LABEL[confidence].label,
     mark: SCORE_CONFIDENCE_MARK[confidence],

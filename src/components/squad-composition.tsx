@@ -13,7 +13,7 @@ import {
   TARGET_MIDPOINT,
   ticksIn,
 } from '@/lib/chart-scale'
-import { confidenceMark, isSolidMark } from '@/lib/score-confidence'
+import { confidenceMark, confidenceStates, isSolidMark } from '@/lib/score-confidence'
 import type { ScoreConfidence } from '@/lib/types/performance'
 
 /**
@@ -229,19 +229,17 @@ export function SquadComposition({ rows }: SquadCompositionProps) {
           </svg>
           One member, against their own cohort
         </span>
-        <span className="flex items-center gap-1.5">
-          <svg width="14" height="14" aria-hidden="true">
-            <circle
-              cx="7"
-              cy="7"
-              r="3.5"
-              fill="none"
-              stroke="var(--chart-series)"
-              strokeWidth="2"
-            />
-          </svg>
-          Hollow: thin data or no cohort
-        </span>
+        {/* Computed from the members drawn, not hardcoded: this legend used to read
+            "hollow: thin data or no cohort" on a chart that can now also carry a
+            half-filled part-period mark, which it would not have mentioned. */}
+        {confidenceStates(rows.flatMap((r) => r.members.map((m) => m.confidence))).map((state) => (
+          <span key={state.confidence} className="flex items-center gap-1.5">
+            <svg width="14" height="14" aria-hidden="true">
+              <ConfidenceDot cx={7} cy={7} r={5} mark={state.mark} hollowFill="none" />
+            </svg>
+            {state.meaning} ({state.count})
+          </span>
+        ))}
       </div>
 
       <MetricNote>
@@ -460,7 +458,7 @@ function MemberStrip({
             <ConfidenceDot
               cx={x}
               cy={cy}
-              r={DOT_R + 1}
+              r={DOT_R}
               mark={confidenceMark(member.confidence)}
               hollowFill="none"
               opacity={dim ? 0.35 : 1}

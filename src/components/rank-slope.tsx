@@ -237,7 +237,7 @@ export function RankSlope({ rows }: { rows: RankSlopeRow[] }) {
                   <ConfidenceDot
                     cx={end.cx}
                     cy={end.cy}
-                    r={5}
+                    r={4}
                     mark={confidenceMark(p.confidence)}
                     opacity={dim ? 0.35 : 1}
                   />
