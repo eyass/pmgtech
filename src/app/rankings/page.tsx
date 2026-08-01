@@ -10,6 +10,9 @@ import { SquadScatter, type SquadScatterRow } from '@/components/squad-scatter'
 import { Card, MetricNote, SectionHeading } from '@/components/ui'
 import { getEngineerOutliers, getSquadOutliers, getSquads, PERIODS, resolvePeriod } from '@/lib/queries'
 import { medianProfile, type RadarSubject, type RadarValues } from '@/lib/radar-geometry'
+import { tieSummary } from '@/lib/rank-bands'
+import { confidenceStates, isSolidMark } from '@/lib/score-confidence'
+import { driverTally } from '@/lib/score-drivers'
 import { type EngineerOutlier } from '@/lib/types/performance'
 
 export const dynamic = 'force-dynamic'
@@ -64,11 +67,23 @@ export default async function RankingsPage({
     meta: [e.seniority_label ?? e.seniority_key, e.squad_name].filter(Boolean).join(' · ') || null,
     values: values(e),
     score: e.score,
-    solid: e.score_confidence === 'high',
-    note: e.score_confidence === 'high' ? null : e.confidence_reason,
+    solid: isSolidMark(e.score_confidence),
+    confidence: e.score_confidence,
+    note: isSolidMark(e.score_confidence) ? null : e.confidence_reason,
   })
 
   const subjects = scored.map(subject)
+
+  // --- what the page says about itself, counted -----------------------------
+  //
+  // Both of these were findings buried in an 11px legend under the first chart, and
+  // both are computed here rather than restated: `tieSummary` is the same function
+  // the dot plot's own legend reads, so the header and the chart cannot drift apart.
+  const ties = tieSummary(scored.map((e) => ({ id: e.engineer_id, score: e.score })))
+  const drivers = driverTally(scored.map((e) => ({ values: values(e) })))
+  const partPeriod = confidenceStates(scored.map((e) => e.score_confidence)).find(
+    (s) => s.confidence === 'partial_window',
+  )
 
   // The org median rather than a per-level one: the grid draws a single backdrop, so
   // a different reference per cell would break the superposition it exists for. The
@@ -122,8 +137,8 @@ export default async function RankingsPage({
     flow: s.flow_score,
     quality: s.quality_score,
     collaboration: s.collaboration_score,
-    solid: s.score_confidence === 'high',
-    confidenceNote: s.score_confidence === 'high' ? null : s.confidence_reason,
+    solid: isSolidMark(s.score_confidence),
+    confidenceNote: isSolidMark(s.score_confidence) ? null : s.confidence_reason,
   }))
 
   const composition: SquadCompositionRow[] = squadRows.map((s) => ({
@@ -131,7 +146,7 @@ export default async function RankingsPage({
     name: s.squad_name,
     squadScore: s.score,
     headcount: s.headcount,
-    solid: s.score_confidence === 'high',
+    solid: isSolidMark(s.score_confidence),
     members: scored
       .filter((e) => e.squad_key === s.squad_key)
       .map((e) => ({
@@ -139,8 +154,8 @@ export default async function RankingsPage({
         name: e.full_name,
         score: e.score,
         level: e.seniority_label ?? e.seniority_key,
-        solid: e.score_confidence === 'high',
-        note: e.score_confidence === 'high' ? null : e.confidence_reason,
+        confidence: e.score_confidence,
+        note: isSolidMark(e.score_confidence) ? null : e.confidence_reason,
       })),
   }))
 
@@ -155,8 +170,8 @@ export default async function RankingsPage({
       collaboration: s.collaboration_score,
     },
     score: s.score,
-    solid: s.score_confidence === 'high',
-    note: s.score_confidence === 'high' ? null : s.confidence_reason,
+    solid: isSolidMark(s.score_confidence),
+    note: isSolidMark(s.score_confidence) ? null : s.confidence_reason,
   }))
 
   return (
@@ -169,6 +184,29 @@ export default async function RankingsPage({
             {selected ? ` · ${selected.name}` : ''} · {scored.length} engineers and{' '}
             {squadRows.length} squads
           </p>
+          {/* The finding, in the header rather than in a legend below the fold. It is
+              the sentence that decides how a reader should treat every other number
+              on the page, and it was being made in 11px grey under the first chart.
+              Computed from the live data by the same function the chart's own legend
+              calls, so the two can never say different things. */}
+          {ties.sentence ? (
+            <p className="mt-1 text-sm">
+              <strong className="font-semibold">{ties.sentence}</strong>
+              <span className="text-[var(--color-muted)]">
+                {' '}
+                — they sit inside one interquartile range of each other, so the ordering
+                between them is arithmetic rather than a finding.
+              </span>
+            </p>
+          ) : null}
+          {partPeriod ? (
+            <p className="mt-1 text-sm text-[var(--color-muted)]">
+              {partPeriod.count === 1 ? 'One engineer was' : `${partPeriod.count} engineers were`}{' '}
+              here for only part of this period — still ranked, but left out of the cohort median
+              they are ranked against. Drawn as a half-filled mark, not the hollow one that means
+              thin data.
+            </p>
+          ) : null}
         </div>
         <Link href="/outliers" className="text-sm text-[var(--color-muted)] hover:underline">
           How the score is built →
@@ -193,6 +231,22 @@ export default async function RankingsPage({
           separation is not. Read the band edges as a lower bound on how much of this ranking is
           noise rather than as a boundary: two scores can land either side of an edge and still be
           within one range of each other.
+        </MetricNote>
+        <MetricNote>
+          The <strong>driver</strong> column answers the other half of the question. A rank number
+          says where somebody landed; the driver says which of the four dimensions put them there,
+          and it is only filled in when that dimension is a full interquartile range from the
+          cohort median. Here that is{' '}
+          <strong>
+            {drivers.driven} of {drivers.driven + drivers.even}
+          </strong>
+          , and the other {drivers.even} read <em>nothing separates</em> — which is the honest
+          answer rather than a missing value. The gate is the same 15 points, for a reason worth
+          knowing: a dimension that far from the median moves the composite by only a quarter of
+          it, so <strong>no single dimension can ever move a composite materially on its own</strong>.
+          That is why the driver is a claim about the dimension&apos;s own axis and not about the
+          rank, and why a smaller gate would be naming a winner out of movement this page refuses
+          to read anywhere else.
         </MetricNote>
       </section>
 
@@ -338,8 +392,14 @@ function dotRows(rows: EngineerOutlier[]): RankDotPlotRow[] {
     rank: e.rank_in_org,
     level: e.seniority_label ?? e.seniority_key,
     squad: e.squad_name,
-    solid: e.score_confidence === 'high',
-    confidenceNote: e.score_confidence === 'high' ? null : e.confidence_reason,
+    confidence: e.score_confidence,
+    confidenceNote: isSolidMark(e.score_confidence) ? null : e.confidence_reason,
+    values: {
+      throughput: e.throughput_score,
+      flow: e.flow_score,
+      quality: e.quality_score,
+      collaboration: e.collaboration_score,
+    },
     standing: e.standing,
     net: e.net,
   }))
@@ -356,8 +416,8 @@ function slopeRows(rows: EngineerOutlier[]): RankSlopeRow[] {
     level: e.seniority_label ?? e.seniority_key,
     squad: e.squad_name,
     score: e.score,
-    solid: e.score_confidence === 'high',
-    confidenceNote: e.score_confidence === 'high' ? null : e.confidence_reason,
+    confidence: e.score_confidence,
+    confidenceNote: isSolidMark(e.score_confidence) ? null : e.confidence_reason,
   }))
 }
 
@@ -368,8 +428,8 @@ function beeswarmRows(rows: EngineerOutlier[]): DimensionBeeswarmEngineer[] {
     shortName: shortName(e.full_name),
     level: e.seniority_label ?? e.seniority_key,
     squad: e.squad_name,
-    solid: e.score_confidence === 'high',
-    confidenceNote: e.score_confidence === 'high' ? null : e.confidence_reason,
+    confidence: e.score_confidence,
+    confidenceNote: isSolidMark(e.score_confidence) ? null : e.confidence_reason,
     throughput: e.throughput_score,
     flow: e.flow_score,
     quality: e.quality_score,

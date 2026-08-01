@@ -65,7 +65,7 @@ describe('the confidence-to-mark map', () => {
 })
 
 describe('the legend', () => {
-  const rows = (...cs: (ScoreConfidence | null)[]) => cs.map((c) => ({ score_confidence: c }))
+  const rows = (...cs: (ScoreConfidence | null)[]) => cs
 
   it('lists only the states actually on the chart', () => {
     const states = confidenceStates(rows('high', 'high', 'thin'))

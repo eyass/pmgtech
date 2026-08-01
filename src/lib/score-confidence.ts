@@ -94,12 +94,12 @@ const STATE_ORDER: ScoreConfidence[] = ['high', 'thin', 'no_cohort', 'partial_wi
  * only what is present, and the caller renders exactly what it gets back.
  */
 export function confidenceStates(
-  rows: { score_confidence: ScoreConfidence | null }[],
+  flags: (ScoreConfidence | null | undefined)[],
 ): ConfidenceState[] {
   const counts = new Map<ScoreConfidence, number>()
-  for (const row of rows) {
-    if (!row.score_confidence) continue
-    counts.set(row.score_confidence, (counts.get(row.score_confidence) ?? 0) + 1)
+  for (const flag of flags) {
+    if (!flag) continue
+    counts.set(flag, (counts.get(flag) ?? 0) + 1)
   }
   return STATE_ORDER.filter((c) => (counts.get(c) ?? 0) > 0).map((confidence) => ({
     confidence,

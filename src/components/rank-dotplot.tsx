@@ -2,9 +2,13 @@
 
 import { useState } from 'react'
 
+import { ConfidenceDot } from '@/components/confidence-dot'
 import { MEDIAN, scoreDomain, ticksIn } from '@/lib/chart-scale'
-import { MATERIAL_SCORE_GAP, tieBands } from '@/lib/rank-bands'
-import type { Standing } from '@/lib/types/performance'
+import { type RadarValues } from '@/lib/radar-geometry'
+import { MATERIAL_SCORE_GAP, tieBands, tieSummary } from '@/lib/rank-bands'
+import { confidenceMark, confidenceStates } from '@/lib/score-confidence'
+import { scoreDrivers } from '@/lib/score-drivers'
+import type { ScoreConfidence, Standing } from '@/lib/types/performance'
 
 /**
  * The ranking with its own precision drawn on top of it.
@@ -42,9 +46,17 @@ import type { Standing } from '@/lib/types/performance'
  *   the 0018 tally that already ships: `even` means not one of that engineer's
  *   dimensions cleared its materiality gate in either direction.
  *
- * Score, rank and gap are drawn as text on every row, so the hover layer adds
- * nothing that is not already legible — the ranked table stays the twin, and this
- * stays readable printed.
+ * **The driver column is the other half of the argument.** A band says a rank number
+ * is not a difference; it does not say what, if anything, *is* one. Each row carries
+ * the dimension furthest from the cohort median, but only where that distance clears
+ * a full interquartile range — see `score-drivers.ts` for why the gate is the same
+ * 15 and not a softer number invented for a one-sided claim. Most rows in this org
+ * print a dash, which is the finding rather than a gap in the chart: the composite
+ * orders fourteen people and for half of them no dimension explains the ordering.
+ *
+ * Score, rank, gap and driver are drawn as text on every row, so the hover layer
+ * adds nothing that is not already legible — the ranked table stays the twin, and
+ * this stays readable printed.
  */
 
 export type RankDotPlotRow = {
@@ -57,9 +69,15 @@ export type RankDotPlotRow = {
   rank: number
   level: string
   squad: string | null
-  /** False for thin data or no cohort — drawn hollow rather than in another colour. */
-  solid: boolean
+  /**
+   * The flag itself rather than a boolean. Four states collapsed into `solid` drew
+   * a part-period engineer identically to a thin-data one, which is a different and
+   * much more misleading sentence — see `score-confidence.ts`.
+   */
+  confidence: ScoreConfidence
   confidenceNote: string | null
+  /** The four sub-scores, for the driver attribution. Nulls are withheld, not zero. */
+  values: RadarValues
   /** From the 0018 materiality tally, carried through `engineer_outliers`. */
   standing: Standing
   net: number
@@ -70,13 +88,17 @@ export type RankDotPlotRow = {
 // clipping. Both were measured against the real names rather than guessed.
 const LABEL_W = 212
 const TRACK_W = 392
-const VALUE_W = 228
-const ROW_H = 26
+// 24 wider than it was, which is what the brace annotation needs after the driver
+// line pushed it right. The rest of the chart is untouched, so nothing rescales.
+const VALUE_W = 252
+// 30 rather than 26: the value block is two lines now — score and gap, then the
+// driver under them — and 26 put the second line into the row below's dot.
+const ROW_H = 30
 const PAD = { top: 46, bottom: 34 }
 const W = LABEL_W + TRACK_W + VALUE_W
 const SCORE_X = LABEL_W + TRACK_W + 12
 const GAP_X = LABEL_W + TRACK_W + 56
-const BRACE_X = LABEL_W + TRACK_W + 106
+const BRACE_X = LABEL_W + TRACK_W + 130
 
 /** Matches `GapPill` on the Outliers table, so the two never disagree in wording. */
 function gapText(standing: Standing, net: number): string {
@@ -117,7 +139,16 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
   for (const box of boxes) for (const id of box.ids) bandOf.set(id, box)
 
   const hovered = scored.find((r) => r.id === active) ?? null
-  const tiedCount = boxes.filter((b) => b.ids.length > 1).reduce((n, b) => n + b.ids.length, 0)
+  // The same function the page header reads, so the legend and the header state one
+  // finding rather than two that have to be kept in step by hand.
+  const ties = tieSummary(scored)
+  // Only the states actually on this chart get a legend row.
+  const states = confidenceStates(scored.map((r) => r.confidence))
+
+  // Driver attribution per row, computed once: the sentence goes in the readout and
+  // the two-word version onto the row itself.
+  const drivers = new Map(scored.map((r) => [r.id, scoreDrivers(r.values)]))
+  const drivenCount = [...drivers.values()].filter((d) => d.verdict === 'driven').length
 
   return (
     <div className="relative">
@@ -175,6 +206,13 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
         </text>
         <text x={GAP_X} y={PAD.top - 13} className="fill-[var(--color-muted)] text-[9px] uppercase tracking-wide">
           gap
+        </text>
+        <text
+          x={SCORE_X}
+          y={PAD.top - 3}
+          className="fill-[var(--color-muted)] text-[9px] uppercase tracking-wide"
+        >
+          driver
         </text>
         <text
           x={LABEL_W + TRACK_W / 2}
@@ -239,6 +277,7 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
         {scored.map((row, i) => {
           const dim = active !== null && row.id !== active
           const cy = rowY(i)
+          const driver = drivers.get(row.id)!
           return (
             <g key={row.id}>
               {/* Rank right-aligned, name left-aligned beside it — the table reading.
@@ -255,7 +294,7 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
               </text>
               <text
                 x={38}
-                y={cy + 0.5}
+                y={cy - 1}
                 className="fill-[var(--color-ink)] text-[11px]"
                 opacity={dim ? 0.45 : 1}
               >
@@ -263,7 +302,7 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
               </text>
               <text
                 x={38}
-                y={cy + 10}
+                y={cy + 9}
                 className="fill-[var(--color-muted)] text-[9px]"
                 opacity={dim ? 0.45 : 1}
               >
@@ -284,20 +323,18 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
                   opacity={0.55}
                 />
               ) : null}
-              <circle
+              <ConfidenceDot
                 cx={px(row.score)}
                 cy={cy}
-                r={4.5}
-                fill={row.solid ? 'var(--chart-series)' : 'var(--color-surface)'}
-                stroke="var(--chart-series)"
-                strokeWidth={row.solid ? 0 : 2}
+                r={5.5}
+                mark={confidenceMark(row.confidence)}
                 opacity={dim ? 0.35 : 1}
               />
 
               {/* Values as text: the chart has to be readable without a pointer. */}
               <text
                 x={SCORE_X}
-                y={cy + 3.5}
+                y={cy - 0.5}
                 className="tnum fill-[var(--color-ink)] text-[10px] font-medium"
                 opacity={dim ? 0.45 : 1}
               >
@@ -305,23 +342,37 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
               </text>
               <text
                 x={GAP_X}
-                y={cy + 3.5}
+                y={cy - 0.5}
                 className="tnum fill-[var(--color-muted)] text-[9px]"
                 opacity={dim ? 0.45 : 1}
               >
                 {gapText(row.standing, row.net)}
               </text>
+              {/* The driver, under the score it explains. A dash where nothing clears
+                  the gate — never the nearest dimension dressed up as a winner. */}
+              <text
+                x={SCORE_X}
+                y={cy + 9.5}
+                className={
+                  driver.headline
+                    ? 'fill-[var(--color-ink)] text-[9px]'
+                    : 'fill-[var(--color-muted)] text-[9px]'
+                }
+                opacity={dim ? 0.45 : 1}
+              >
+                {driver.headline ?? 'nothing separates'}
+              </text>
 
-              {/* A 26px transparent row target: nobody reliably hits a 9px dot. */}
+              {/* A full-row transparent target: nobody reliably hits a 9px dot. */}
               <rect
                 x={0}
-                y={cy - 13}
+                y={cy - ROW_H / 2}
                 width={BRACE_X - 6}
-                height={26}
+                height={ROW_H}
                 fill="transparent"
                 tabIndex={0}
                 role="button"
-                aria-label={`${row.name}, ${row.level}, rank ${row.rank} in org, score ${row.score.toFixed(1)}, gap ${gapText(row.standing, row.net)}`}
+                aria-label={`${row.name}, ${row.level}, rank ${row.rank} in org, score ${row.score.toFixed(1)}, gap ${gapText(row.standing, row.net)}. ${driver.sentence}`}
                 className="cursor-pointer outline-none focus-visible:stroke-[var(--color-ink)]"
                 onMouseEnter={() => setActive(row.id)}
                 onMouseLeave={() => setActive((c) => (c === row.id ? null : c))}
@@ -338,7 +389,7 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
           tie band is a statement about — which is the one thing this chart must not
           hide. Nothing here is load-bearing anyway: score, rank and gap are already
           drawn on the row, and this adds the sentence the shading is making. */}
-      <div className="mt-2 min-h-[2.5rem] border-t border-[var(--color-line)] pt-2">
+      <div className="mt-2 min-h-[3.5rem] border-t border-[var(--color-line)] pt-2">
         {hovered ? (
           <p className="text-[11px] leading-relaxed">
             <span className="font-semibold">{hovered.name}</span>
@@ -349,13 +400,15 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
               <span className="tnum">{hovered.score.toFixed(1)}</span> · gap{' '}
               {gapText(hovered.standing, hovered.net)}
               {' — '}
-              {describeBand((bandOf.get(hovered.id)?.ids.length ?? 1) - 1)}
+              {describeBand((bandOf.get(hovered.id)?.ids.length ?? 1) - 1)}{' '}
+              {drivers.get(hovered.id)!.sentence}
               {hovered.confidenceNote ? ` ${hovered.confidenceNote}.` : ''}
             </span>
           </p>
         ) : (
           <p className="text-[11px] text-[var(--color-muted)]">
-            Hover or focus a row to read what its rank number is worth.
+            Hover or focus a row to read what its rank number is worth, and which dimension — if
+            any — put it there.
           </p>
         )}
       </div>
@@ -375,22 +428,22 @@ export function RankDotPlot({ rows }: { rows: RankDotPlotRow[] }) {
               strokeOpacity="0.6"
             />
           </svg>
-          Not materially apart — {tiedCount} of {scored.length} hold a rank number that is not a
-          difference
+          Not materially apart — {ties.sentence ?? 'nothing scored'}
         </span>
-        <span className="flex items-center gap-1.5">
-          <svg width="12" height="12" aria-hidden="true">
-            <circle
-              cx="6"
-              cy="6"
-              r="3.5"
-              fill="var(--color-surface)"
-              stroke="var(--chart-series)"
-              strokeWidth="2"
-            />
-          </svg>
-          Thin data or no cohort — placement is indicative
+        <span>
+          Driver — {drivenCount} of {scored.length} have a dimension a full range from the median
         </span>
+        {/* Computed from the rows: a legend naming a state nobody is in teaches the
+            reader to ignore it, and one missing a state that is on the chart is worse
+            than no legend at all. */}
+        {states.map((state) => (
+          <span key={state.confidence} className="flex items-center gap-1.5">
+            <svg width="13" height="13" aria-hidden="true">
+              <ConfidenceDot cx={6.5} cy={6.5} r={5} mark={state.mark} />
+            </svg>
+            {state.meaning} ({state.count})
+          </span>
+        ))}
       </div>
     </div>
   )

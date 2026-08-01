@@ -2,8 +2,11 @@
 
 import { useState } from 'react'
 
+import { ConfidenceDot } from '@/components/confidence-dot'
 import { MEDIAN, scoreDomain, ticksIn } from '@/lib/chart-scale'
 import { beeswarmLanes } from '@/lib/rank-bands'
+import { confidenceMark, confidenceStates } from '@/lib/score-confidence'
+import type { ScoreConfidence } from '@/lib/types/performance'
 
 /**
  * Which dimension is actually doing the separating.
@@ -46,8 +49,11 @@ export type DimensionBeeswarmEngineer = {
   shortName: string
   level: string
   squad: string | null
-  /** False for thin data or no cohort — drawn hollow rather than in another colour. */
-  solid: boolean
+  /**
+   * The flag itself, not a boolean: `partial_window` draws differently from thin
+   * data because it means something different. See `score-confidence.ts`.
+   */
+  confidence: ScoreConfidence
   confidenceNote: string | null
   /** Null where the dimension had no data — dropped, never counted as zero. */
   throughput: number | null
@@ -311,13 +317,11 @@ export function DimensionBeeswarm({ engineers }: { engineers: DimensionBeeswarmE
                       opacity={0.55}
                     />
                   ) : null}
-                  <circle
+                  <ConfidenceDot
                     cx={cx}
                     cy={cy}
-                    r={4.5}
-                    fill={m.engineer.solid ? 'var(--chart-series)' : 'var(--color-surface)'}
-                    stroke="var(--chart-series)"
-                    strokeWidth={m.engineer.solid ? 0 : 2}
+                    r={5.5}
+                    mark={confidenceMark(m.engineer.confidence)}
                     opacity={dim ? 0.3 : 1}
                   />
                   {labelled.has(`${row.key}:${m.engineer.id}`) ? (
@@ -411,19 +415,14 @@ export function DimensionBeeswarm({ engineers }: { engineers: DimensionBeeswarmE
           </svg>
           50, the cohort median by construction
         </span>
-        <span className="flex items-center gap-1.5">
-          <svg width="12" height="12" aria-hidden="true">
-            <circle
-              cx="6"
-              cy="6"
-              r="3.5"
-              fill="var(--color-surface)"
-              stroke="var(--chart-series)"
-              strokeWidth="2"
-            />
-          </svg>
-          Thin data or no cohort
-        </span>
+        {confidenceStates(engineers.map((e) => e.confidence)).map((state) => (
+          <span key={state.confidence} className="flex items-center gap-1.5">
+            <svg width="13" height="13" aria-hidden="true">
+              <ConfidenceDot cx={6.5} cy={6.5} r={5} mark={state.mark} />
+            </svg>
+            {state.meaning} ({state.count})
+          </span>
+        ))}
       </div>
     </div>
   )

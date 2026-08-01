@@ -20,6 +20,7 @@
 // Relative and extensioned, not `@/lib/chart-scale`: `node --test` runs these
 // modules directly and does not resolve the bundler's path alias.
 import { MEDIAN } from './chart-scale.ts'
+import { SCORE_CONFIDENCE_LABEL, type ScoreConfidence } from './types/performance.ts'
 
 // --- the contract -----------------------------------------------------------
 
@@ -81,6 +82,14 @@ export type RadarSubject = {
    * never in colour alone, so the caveat survives greyscale and a printout.
    */
   solid: boolean
+  /**
+   * Which caveat it is, when there is one. A radar is a polygon rather than a dot,
+   * so there is no third shape to give `partial_window` here — but the *wording*
+   * must still be right, and "Thin data:" in front of a part-period engineer is
+   * simply false. Optional so squads, which never carry the fourth state, can be
+   * built without it.
+   */
+  confidence?: ScoreConfidence | null
   /** Why confidence is thin, in the app's own words. */
   note?: string | null
 }
@@ -226,8 +235,19 @@ export function describeProfile(subject: RadarSubject): string {
   })
   const composite =
     subject.score === null ? 'no composite score' : `composite ${subject.score.toFixed(1)} of 100`
-  const caveat = subject.solid ? '' : ` Thin data: ${subject.note ?? 'placement is indicative'}.`
+  // The caveat is named from the shared label map rather than assumed to be thin
+  // data: `no_cohort` and `partial_window` are also not-solid and are not that.
+  const caveatLabel = subject.confidence
+    ? SCORE_CONFIDENCE_LABEL[subject.confidence].label
+    : 'Thin data'
+  const caveat = subject.solid
+    ? ''
+    : ` ${capitaliseFirst(caveatLabel)}: ${subject.note ?? 'placement is indicative'}.`
   return `${subject.name}. ${parts.join(', ')}. ${composite}.${caveat}`
+}
+
+function capitaliseFirst(s: string): string {
+  return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1)
 }
 
 // --- orders for the small multiples -----------------------------------------

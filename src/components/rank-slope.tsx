@@ -2,7 +2,10 @@
 
 import { useState } from 'react'
 
+import { ConfidenceDot } from '@/components/confidence-dot'
 import { levelSlot } from '@/lib/rank-bands'
+import { confidenceMark, confidenceStates } from '@/lib/score-confidence'
+import type { ScoreConfidence } from '@/lib/types/performance'
 
 /**
  * How much of a placing is the engineer and how much is the job title.
@@ -51,8 +54,11 @@ export type RankSlopeRow = {
   level: string
   squad: string | null
   score: number | null
-  /** False for thin data or no cohort — drawn hollow rather than in another colour. */
-  solid: boolean
+  /**
+   * The flag itself, not a boolean: `partial_window` draws differently from thin
+   * data because it means something different. See `score-confidence.ts`.
+   */
+  confidence: ScoreConfidence
   confidenceNote: string | null
 }
 
@@ -228,13 +234,11 @@ export function RankSlope({ rows }: { rows: RankSlopeRow[] }) {
                       opacity={0.55}
                     />
                   ) : null}
-                  <circle
+                  <ConfidenceDot
                     cx={end.cx}
                     cy={end.cy}
-                    r={4}
-                    fill={p.solid ? 'var(--chart-series)' : 'var(--color-surface)'}
-                    stroke="var(--chart-series)"
-                    strokeWidth={p.solid ? 0 : 2}
+                    r={5}
+                    mark={confidenceMark(p.confidence)}
                     opacity={dim ? 0.35 : 1}
                   />
                 </g>
@@ -324,19 +328,14 @@ export function RankSlope({ rows }: { rows: RankSlopeRow[] }) {
           Down the page is <strong>worse than the org ranking implies</strong> for their level, up
           the page is better. Flat means seniority is not moving the placing.
         </span>
-        <span className="flex items-center gap-1.5">
-          <svg width="12" height="12" aria-hidden="true">
-            <circle
-              cx="6"
-              cy="6"
-              r="3.5"
-              fill="var(--color-surface)"
-              stroke="var(--chart-series)"
-              strokeWidth="2"
-            />
-          </svg>
-          Thin data or no cohort
-        </span>
+        {confidenceStates(rows.map((r) => r.confidence)).map((state) => (
+          <span key={state.confidence} className="flex items-center gap-1.5">
+            <svg width="13" height="13" aria-hidden="true">
+              <ConfidenceDot cx={6.5} cy={6.5} r={5} mark={state.mark} />
+            </svg>
+            {state.meaning} ({state.count})
+          </span>
+        ))}
         {dropped > 0 ? (
           <span>
             {dropped} {dropped === 1 ? 'engineer is' : 'engineers are'} not drawn: they are the only

@@ -2,6 +2,7 @@
 
 import { useState, type Dispatch, type SetStateAction } from 'react'
 
+import { ConfidenceDot } from '@/components/confidence-dot'
 import { MetricNote } from '@/components/ui'
 import {
   absoluteDomain,
@@ -12,6 +13,8 @@ import {
   TARGET_MIDPOINT,
   ticksIn,
 } from '@/lib/chart-scale'
+import { confidenceMark, isSolidMark } from '@/lib/score-confidence'
+import type { ScoreConfidence } from '@/lib/types/performance'
 
 /**
  * Whether a squad is uniformly strong or carried by one person.
@@ -54,8 +57,11 @@ export type SquadCompositionMember = {
   /** 0-100 against their own seniority cohort. 50 is the cohort median. Null when unscored. */
   score: number | null
   level: string
-  /** False for thin data or no cohort — hollow, never a second colour. */
-  solid: boolean
+  /**
+   * The flag itself: a member who was here for part of the period draws as a half
+   * dot, not as the hollow one that means thin data. See `score-confidence.ts`.
+   */
+  confidence: ScoreConfidence
   note: string | null
 }
 
@@ -451,13 +457,12 @@ function MemberStrip({
                 opacity={0.55}
               />
             ) : null}
-            <circle
+            <ConfidenceDot
               cx={x}
               cy={cy}
-              r={DOT_R}
-              fill={member.solid ? 'var(--chart-series)' : 'none'}
-              stroke="var(--chart-series)"
-              strokeWidth={member.solid ? 0 : 2}
+              r={DOT_R + 1}
+              mark={confidenceMark(member.confidence)}
+              hollowFill="none"
               opacity={dim ? 0.35 : 1}
             />
             <circle
@@ -519,7 +524,7 @@ function MemberList({ members }: { members: SquadCompositionMember[] }) {
       {ordered.map((m, i) => (
         <span key={m.id}>
           {i > 0 ? ' · ' : ''}
-          <span className={m.solid ? undefined : 'italic'}>{m.name}</span>{' '}
+          <span className={isSolidMark(m.confidence) ? undefined : 'italic'}>{m.name}</span>{' '}
           {measured(m.score) === null ? 'not scored' : measured(m.score)!.toFixed(1)}
         </span>
       ))}
