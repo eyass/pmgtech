@@ -7,6 +7,7 @@ import {
   levelSlot,
   materiallyApart,
   tieBands,
+  tieSummary,
 } from '../src/lib/rank-bands.ts'
 
 /**
@@ -135,6 +136,68 @@ test('banding does not depend on the order rows arrive in', () => {
     tieBands(shuffled).map((b) => b.ids.slice().sort()),
     tieBands(REAL_SCORES).map((b) => b.ids.slice().sort()),
   )
+})
+
+// --- the header finding ------------------------------------------------------
+
+test('the finding the page leads with is counted, never written down', () => {
+  const summary = tieSummary(REAL_SCORES)
+  assert.equal(summary.scored, 14)
+  assert.equal(summary.bands, 3)
+  // Two in the top band and eleven in the middle: thirteen of fourteen.
+  assert.equal(summary.tied, 13)
+  assert.equal(summary.sentence, '13 of 14 hold a rank number that is not a difference')
+})
+
+test('the finding degrades sensibly at every small N', () => {
+  const rows = (...scores: (number | null)[]) =>
+    scores.map((score, i) => ({ id: `e${i}`, score }))
+
+  // Nobody scored: "0 of 0" is not a finding, so there is nothing to say.
+  assert.equal(tieSummary([]).sentence, null)
+  assert.equal(tieSummary(rows(null, null)).sentence, null)
+
+  // One engineer: there is no ranking, so no rank number can be noise. Saying
+  // "0 of 1 hold a rank number that is not a difference" implies the opposite.
+  assert.equal(tieSummary(rows(60)).sentence, 'one scored engineer, so there is no ranking to separate')
+
+  // Two, materially apart: the positive claim, said positively.
+  assert.equal(
+    tieSummary(rows(80, 60)).sentence,
+    'every rank number here clears a full interquartile range',
+  )
+
+  // Two, not apart: everybody is tied, and "2 of 2" is arithmetic nobody should do.
+  assert.equal(
+    tieSummary(rows(60, 55)).sentence,
+    'no rank number here is a difference — all 2 sit inside a tie band',
+  )
+
+  // Everybody tied across more than one band still counts as everybody tied: each of
+  // them shares a band with somebody, so not one of their rank numbers is a claim.
+  assert.equal(
+    tieSummary(rows(100, 95, 60, 55)).sentence,
+    'no rank number here is a difference — all 4 sit inside a tie band',
+  )
+
+  // The mixed case, which is the one the real org is in.
+  assert.equal(
+    tieSummary(rows(100, 95, 60)).sentence,
+    '2 of 3 hold a rank number that is not a difference',
+  )
+})
+
+test('the summary counts the same bands the chart draws', () => {
+  // Header and legend read one function precisely so they cannot disagree; this is
+  // the property that makes that safe.
+  const bands = tieBands(REAL_SCORES)
+  const summary = tieSummary(REAL_SCORES)
+  assert.equal(summary.bands, bands.length)
+  assert.equal(
+    summary.tied,
+    bands.filter((b) => b.ids.length > 1).reduce((n, b) => n + b.ids.length, 0),
+  )
+  assert.equal(summary.scored, bands.reduce((n, b) => n + b.ids.length, 0))
 })
 
 // --- beeswarm offsets --------------------------------------------------------

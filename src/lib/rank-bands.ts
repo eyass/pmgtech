@@ -75,6 +75,63 @@ export function tieBands(rows: { id: string; score: number | null }[]): TieBand[
   return bands
 }
 
+export type TieSummary = {
+  /** Rows with a score. Unscored rows are not part of a ranking at all. */
+  scored: number
+  /** How many of them share a band with at least one other engineer. */
+  tied: number
+  /** How many bands the scored rows fall into. */
+  bands: number
+  /**
+   * The finding as one clause, or null when there is no ranking to describe.
+   * Sentence case and no full stop, so it can sit in a header line beside
+   * "14 engineers and 4 squads" or under a chart as a legend.
+   */
+  sentence: string | null
+}
+
+/**
+ * How much of a ranking is real, counted rather than asserted.
+ *
+ * This is the single most important sentence the page can say, and it was living in
+ * an 11px legend under the first chart. Lifting it into the header meant it had to
+ * be computable by a server component, which meant it had to live in a `.ts` lib —
+ * a value exported from a `'use client'` module is a client reference and the page
+ * throws at request time. The chart's own legend now reads the same function, so the
+ * header and the legend cannot disagree.
+ *
+ * The small-N branches are not defensive padding; each is a sentence that would
+ * otherwise be false or absurd:
+ *
+ *  - **Nobody scored.** No sentence at all. "0 of 0" is not a finding.
+ *  - **One engineer.** There is no ranking, so there is nothing to be noise. Saying
+ *    "0 of 1 hold a rank number that is not a difference" implies the one rank
+ *    number means something, which is the opposite of true.
+ *  - **Nobody tied.** The positive claim, said positively. Falling through to
+ *    "0 of 14 hold a rank number that is not a difference" is technically right and
+ *    reads as a hedge.
+ *  - **Everybody tied.** "14 of 14" is arithmetic nobody should have to do; say the
+ *    thing it means.
+ */
+export function tieSummary(rows: { id: string; score: number | null }[]): TieSummary {
+  const bands = tieBands(rows)
+  const scored = bands.reduce((n, b) => n + b.ids.length, 0)
+  const tied = bands.filter((b) => b.ids.length > 1).reduce((n, b) => n + b.ids.length, 0)
+
+  const sentence =
+    scored === 0
+      ? null
+      : scored === 1
+        ? 'one scored engineer, so there is no ranking to separate'
+        : tied === 0
+          ? `every rank number here clears a full interquartile range`
+          : tied === scored
+            ? `no rank number here is a difference — all ${scored} sit inside a tie band`
+            : `${tied} of ${scored} hold a rank number that is not a difference`
+
+  return { scored, tied, bands: bands.length, sentence }
+}
+
 /**
  * Which vertical lane each dot goes in so a row of them stays countable.
  *
