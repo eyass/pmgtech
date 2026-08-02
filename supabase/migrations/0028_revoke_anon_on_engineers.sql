@@ -1,0 +1,38 @@
+-- 0028_revoke_anon_on_engineers.sql — close a bootstrap grant on the directory
+--
+-- Applied to production on 2026-08-02 as migration `revoke_anon_on_engineers`
+-- (version 20260802060350). This file records what was applied, in the same way
+-- 0025 was recorded after the fact.
+--
+-- `anon` held table-level SELECT, INSERT, UPDATE and REFERENCES on `engineers`,
+-- inherited from the Supabase project bootstrap. `0006_security.sql` revoked the
+-- default execute grant on functions but never swept table privileges, so the
+-- entire engineer directory — names, emails, managers, sites, start dates — sat
+-- behind exactly one RLS policy, on a deployment that is publicly reachable.
+--
+-- RLS is on and no policy reaches `anon`, so nothing was readable in practice.
+-- This is defence in depth, not an incident. But every table created since 0025 —
+-- `metric_targets`, `metric_target_changes`, both snapshot tables — states the
+-- opposite posture on its own first line: revoke from public and anon, so the grant
+-- and the policy are two independent locks rather than one with a spare.
+--
+-- Why this is its own migration rather than riding along: it was found and written
+-- inside in-progress tenure-normalisation work. Reverting tenure normalisation is a
+-- plausible thing to want to do — it changes every senior engineer's score — and a
+-- revert must not silently reopen a security gap as a side effect. Two unrelated
+-- decisions, two migrations, two independent reverts.
+--
+-- Verified before applying: nothing in the application reads `engineers` with the
+-- anon key. Data reads go through the service-role client
+-- (`src/lib/supabase/admin.ts`); the anon key is used only for OAuth sign-in and
+-- session refresh, which touch the `auth` schema, not `public`. A signed-in reader
+-- is `authenticated`, whose grant and policy are both untouched here.
+--
+-- To reverse:
+--   grant select, insert, update, references on table engineers to anon;
+--
+-- Deliberately NOT done here: the other ~20 tables `0006` lists are in the same
+-- position. Sweeping all of them is the right follow-up and wants its own migration
+-- with its own verification, table by table.
+
+revoke all on table engineers from anon;
