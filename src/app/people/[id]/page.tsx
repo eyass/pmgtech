@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 
 import { AssessmentForm } from '@/components/assessment-form'
 import { IndividualProfile } from '@/components/performance'
+import { ScoreSparkline } from '@/components/score-sparkline'
 import { Card, Kpi, MetricNote, Pill, SectionHeading, SquadBadge, Table, Td, Th } from '@/components/ui'
 import { currentUser } from '@/lib/auth'
 import { compact, hours, nf, relativeDate, shortDate } from '@/lib/format'
@@ -12,6 +13,7 @@ import {
   getAssessmentSummary,
   getEngineer,
   getEngineerProfiles,
+  getEngineerScoreHistory,
   getEngineerScorecards,
   getPerformanceDimensions,
   getSeniorityBenchmark,
@@ -19,11 +21,29 @@ import {
   PERIODS,
   resolvePeriod,
 } from '@/lib/queries'
+import { crossesDefinitionBoundary } from '@/lib/score-history'
 import { supabaseAdmin } from '@/lib/supabase/admin'
 
 import { saveAssessment } from './actions'
 
 export const dynamic = 'force-dynamic'
+
+/**
+ * The tab title carries the person's name. A static string here would leave every
+ * open engineer page identical in the tab strip, and comparing two people by
+ * flipping between tabs is one of the main ways this page gets used.
+ *
+ * It reuses `getEngineer`, which the page itself also calls — Next dedupes them
+ * within a render pass. An unknown id resolves to the fallback rather than throwing,
+ * because metadata failing is not a reason to lose the 404 the page is about to
+ * render.
+ */
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const engineer = await getEngineer(id).catch(() => null)
+  const name = engineer?.display_name ?? engineer?.full_name
+  return { title: `${name ?? 'Engineer'} — PMG Engineering Tracker` }
+}
 
 export default async function PersonPage({
   params,
@@ -40,7 +60,19 @@ export default async function PersonPage({
   if (!engineer) notFound()
 
   const reviewPeriod = currentPeriod()
-  const [scorecards, benchmark, squads, recentMrs, identities, profiles, dimensions, assessments, summary, user] =
+  const [
+    scorecards,
+    benchmark,
+    squads,
+    recentMrs,
+    identities,
+    profiles,
+    dimensions,
+    assessments,
+    summary,
+    user,
+    scoreHistory,
+  ] =
     await Promise.all([
       getEngineerScorecards(range),
       getSeniorityBenchmark(range),
@@ -52,6 +84,7 @@ export default async function PersonPage({
       getAssessments(id, reviewPeriod.start, reviewPeriod.end),
       getAssessmentSummary(id, reviewPeriod.start, reviewPeriod.end),
       currentUser(),
+      getEngineerScoreHistory(id, key),
     ])
   const profile = profiles[0]
 
@@ -196,6 +229,60 @@ export default async function PersonPage({
           <IndividualProfile profile={profile} />
         </section>
       ) : null}
+
+      {/* --- score over time --------------------------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="Score over time"
+          hint={`Composite score from nightly snapshots of the ${PERIODS[key].label.toLowerCase()} window.`}
+        />
+        <Card>
+          {scoreHistory.error ? (
+            <p className="text-sm text-[var(--color-muted)]">
+              History could not be loaded ({scoreHistory.error}). Everything else on this page is
+              computed live and is unaffected.
+            </p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-4">
+              <ScoreSparkline
+                points={scoreHistory.rows}
+                label={engineer.display_name ?? engineer.full_name ?? undefined}
+                width={180}
+                height={44}
+              />
+              <div className="text-sm text-[var(--color-muted)]">
+                {scoreHistory.rows.length === 0 ? (
+                  <>
+                    No snapshots yet for this window. The nightly capture runs at 03:30; two of them
+                    make a trend.
+                  </>
+                ) : scoreHistory.rows.length === 1 ? (
+                  <>One capture so far, so there is no direction to read yet.</>
+                ) : (
+                  <>
+                    {scoreHistory.rows.length} captures
+                    {crossesDefinitionBoundary(scoreHistory.rows) ? (
+                      <>
+                        {' '}
+                        — spanning more than one scoring definition, so the line breaks rather than
+                        joining measurements that were made differently
+                      </>
+                    ) : null}
+                    .
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </Card>
+        <MetricNote>
+          A rise here can mean the person changed, or that the people they are scored against did.
+          The composite is a position within a seniority cohort, so a cohort that got faster moves
+          everyone in it down without anyone slowing. Read it alongside the dimension bands above,
+          which move for the person&apos;s own reasons.
+        </MetricNote>
+      </section>
 
       {/* --- assessment: the human half --------------------------------------- */}
 

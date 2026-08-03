@@ -51,6 +51,8 @@ import {
 
 export const dynamic = 'force-dynamic'
 
+export const metadata = { title: 'Admin — PMG Engineering Tracker' }
+
 export default async function AdminPage() {
   const user = await currentUser()
   const readOnly = !user?.isAdmin

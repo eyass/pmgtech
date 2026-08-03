@@ -19,6 +19,18 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en-GB">
       <body className="min-h-screen">
+        {/*
+          Keyboard users otherwise tab through seven nav links, the period picker and
+          the sign-out link before reaching the page itself — on every navigation.
+          Visible only when focused, so it costs nothing to everyone else.
+        */}
+        <a
+          href="#main"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-20 focus:rounded-lg focus:bg-[var(--color-ink)] focus:px-3 focus:py-2 focus:text-sm focus:text-[var(--color-surface)]"
+        >
+          Skip to content
+        </a>
+
         {user ? (
           <header className="sticky top-0 z-10 border-b border-[var(--color-line)] bg-[var(--color-surface)]/85 backdrop-blur">
             <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
@@ -53,7 +65,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           </header>
         ) : null}
 
-        <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
+        <main id="main" className="mx-auto max-w-7xl px-4 py-6">
+          {children}
+        </main>
       </body>
     </html>
   )

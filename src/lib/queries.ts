@@ -1,3 +1,4 @@
+import type { EngineerScoreSnapshot, ScoreSnapshot } from '@/lib/score-history'
 import { supabaseAdmin } from '@/lib/supabase/admin'
 import { loadBridgeCandidates, type BridgeRow } from '@/lib/sync/bridge'
 import {
@@ -523,5 +524,104 @@ export async function getMetricTargetHistory(
       describeTargetChange(row, targets),
     ),
     error: null,
+  }
+}
+
+/* --- score history ---------------------------------------------------------- */
+
+const SNAPSHOT_COLUMNS =
+  'engineer_id, captured_for, definition_version, score, rank_in_org, rank_at_level, ' +
+  'peers_at_level, throughput_score, flow_score, quality_score, collaboration_score, ' +
+  'score_confidence, standing, seniority_key'
+
+/**
+ * Every captured score for one period, newest capture last, with names attached.
+ *
+ * These reads are tolerant in the same way `getMetricTargets` is: history is
+ * additional context on pages that already work without it, so a failure returns an
+ * empty series and a reason rather than taking the page down. A page that 500s
+ * because a *sparkline* could not load is a worse page than one without a sparkline.
+ *
+ * `limit` is a row cap, not a capture cap — with ~14 engineers a 400-row default is
+ * roughly the last month of daily captures. It exists so the query cannot grow
+ * without bound as history accumulates.
+ */
+export async function getOrgScoreHistory(
+  periodKey: PeriodKey = '90d',
+  limit = 400,
+): Promise<{ rows: EngineerScoreSnapshot[]; error: string | null }> {
+  const { data, error } = await supabaseAdmin()
+    .from('engineer_score_snapshots')
+    .select(`${SNAPSHOT_COLUMNS}, engineers!inner(full_name, is_ignored)`)
+    .eq('period_key', periodKey)
+    .eq('engineers.is_ignored', false)
+    .order('captured_for', { ascending: false })
+    .limit(limit)
+
+  if (error) return { rows: [], error: error.message }
+
+  type Joined = Omit<EngineerScoreSnapshot, 'full_name'> & {
+    engineers: { full_name: string | null } | null
+  }
+
+  const rows = ((data ?? []) as unknown as Joined[]).map(({ engineers, ...snapshot }) => ({
+    ...snapshot,
+    full_name: engineers?.full_name ?? null,
+  }))
+
+  return { rows, error: null }
+}
+
+/** One engineer's captured scores for one period. Same tolerance as above. */
+export async function getEngineerScoreHistory(
+  engineerId: string,
+  periodKey: PeriodKey = '90d',
+  limit = 120,
+): Promise<{ rows: ScoreSnapshot[]; error: string | null }> {
+  const { data, error } = await supabaseAdmin()
+    .from('engineer_score_snapshots')
+    .select(SNAPSHOT_COLUMNS)
+    .eq('engineer_id', engineerId)
+    .eq('period_key', periodKey)
+    .order('captured_for', { ascending: false })
+    .limit(limit)
+
+  if (error) return { rows: [], error: error.message }
+  // Cast through unknown: SNAPSHOT_COLUMNS is a runtime string, so supabase-js
+  // cannot infer the row shape from it and falls back to GenericStringError[].
+  return { rows: (data ?? []) as unknown as ScoreSnapshot[], error: null }
+}
+
+/**
+ * How much history exists, for the empty states.
+ *
+ * The distinction that matters here is between "the capture has never run" and "the
+ * capture runs but there is only one reading so far". The first is a wiring problem
+ * someone should fix; the second just needs another night. A single "no trend data"
+ * message for both would hide the bug behind the expected case — which is precisely
+ * how `capture_score_snapshots` went eleven days without anyone noticing nothing
+ * called it.
+ */
+export async function getScoreHistoryCoverage(periodKey: PeriodKey = '90d'): Promise<{
+  captures: number
+  latest: string | null
+  definitionVersions: string[]
+}> {
+  const { data, error } = await supabaseAdmin()
+    .from('engineer_score_snapshots')
+    .select('captured_for, definition_version')
+    .eq('period_key', periodKey)
+    .order('captured_for', { ascending: false })
+    .limit(1000)
+
+  if (error) return { captures: 0, latest: null, definitionVersions: [] }
+
+  const rows = (data ?? []) as { captured_for: string; definition_version: string }[]
+  const dates = [...new Set(rows.map((r) => r.captured_for))].sort((a, b) => b.localeCompare(a))
+
+  return {
+    captures: dates.length,
+    latest: dates[0] ?? null,
+    definitionVersions: [...new Set(rows.map((r) => r.definition_version))],
   }
 }

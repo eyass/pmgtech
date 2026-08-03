@@ -25,6 +25,8 @@ import {
 
 export const dynamic = 'force-dynamic'
 
+export const metadata = { title: 'Delivery — PMG Engineering Tracker' }
+
 /**
  * Delivery/DORA page. Where the overview gives one number per metric, this page
  * shows the distribution behind it and states each definition, because DORA

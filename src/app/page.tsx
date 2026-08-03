@@ -20,6 +20,8 @@ import {
 
 export const dynamic = 'force-dynamic'
 
+export const metadata = { title: 'Overview — PMG Engineering Tracker' }
+
 export default async function OverviewPage({
   searchParams,
 }: {
