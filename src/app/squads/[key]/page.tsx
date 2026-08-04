@@ -30,6 +30,13 @@ import {
 
 export const dynamic = 'force-dynamic'
 
+/** Same reasoning as the engineer page: the squad's name belongs in the tab. */
+export async function generateMetadata({ params }: { params: Promise<{ key: string }> }) {
+  const { key } = await params
+  const squad = await getSquadByKey(key).catch(() => null)
+  return { title: `${squad?.name ?? 'Squad'} — PMG Engineering Tracker` }
+}
+
 export default async function SquadDetailPage({
   params,
   searchParams,

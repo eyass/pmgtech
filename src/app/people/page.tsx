@@ -14,6 +14,8 @@ import {
 
 export const dynamic = 'force-dynamic'
 
+export const metadata = { title: 'People — PMG Engineering Tracker' }
+
 export default async function PeoplePage({
   searchParams,
 }: {

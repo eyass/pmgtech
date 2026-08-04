@@ -13,7 +13,14 @@ type CookiesToSet = { name: string; value: string; options?: CookieOptions }[]
  *    account cannot reach a route handler by guessing its URL.
  */
 
-const PUBLIC_PATHS = ['/login', '/auth/callback', '/auth/signout', '/api/sync']
+/**
+ * `/api/snapshots` is here for the same reason as `/api/sync`: Vercel Cron calls it
+ * with a bearer token and no session cookie, so leaving it gated would redirect the
+ * cron to /login and the capture would silently never run. Both routes do their own
+ * authorisation in `authoriseSync`, which is what makes excluding them safe —
+ * "public" here means "not cookie-gated", not "unauthenticated".
+ */
+const PUBLIC_PATHS = ['/login', '/auth/callback', '/auth/signout', '/api/sync', '/api/snapshots']
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl

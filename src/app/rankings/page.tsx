@@ -2,13 +2,23 @@ import Link from 'next/link'
 
 import { DimensionBeeswarm, type DimensionBeeswarmEngineer } from '@/components/dimension-beeswarm'
 import { HeadToHead } from '@/components/head-to-head'
+import { Movers } from '@/components/movers'
 import { RadarGrid } from '@/components/radar-grid'
+import { RankBump } from '@/components/rank-bump'
 import { RankDotPlot, type RankDotPlotRow } from '@/components/rank-dotplot'
 import { RankSlope, type RankSlopeRow } from '@/components/rank-slope'
 import { SquadComposition, type SquadCompositionRow } from '@/components/squad-composition'
 import { SquadScatter, type SquadScatterRow } from '@/components/squad-scatter'
 import { Card, MetricNote, SectionHeading } from '@/components/ui'
-import { getEngineerOutliers, getSquadOutliers, getSquads, PERIODS, resolvePeriod } from '@/lib/queries'
+import {
+  getEngineerOutliers,
+  getOrgScoreHistory,
+  getScoreHistoryCoverage,
+  getSquadOutliers,
+  getSquads,
+  PERIODS,
+  resolvePeriod,
+} from '@/lib/queries'
 import { medianProfile, type RadarSubject, type RadarValues } from '@/lib/radar-geometry'
 import { type EngineerOutlier } from '@/lib/types/performance'
 
@@ -42,10 +52,22 @@ export default async function RankingsPage({
   const squads = await getSquads()
   const selected = squadFilter ? squads.find((s) => s.key === squadFilter) : undefined
 
-  const [engineers, squadRows] = await Promise.all([
+  const [engineers, squadRows, scoreHistory, historyCoverage] = await Promise.all([
     getEngineerOutliers(range, selected?.id),
     getSquadOutliers(range),
+    // Snapshots are keyed by the period they measured, so the history has to be
+    // asked for the same window the rest of the page is showing. A '30d' capture is
+    // a different measurement, not a shorter view of the same one.
+    getOrgScoreHistory(key),
+    getScoreHistoryCoverage(key),
   ])
+
+  const history = {
+    rows: scoreHistory.rows,
+    error: scoreHistory.error,
+    captures: historyCoverage.captures,
+    definitionVersions: historyCoverage.definitionVersions,
+  }
 
   const scored = engineers.filter((e) => e.score !== null)
 
@@ -193,6 +215,55 @@ export default async function RankingsPage({
           separation is not. Read the band edges as a lower bound on how much of this ranking is
           noise rather than as a boundary: two scores can land either side of an edge and still be
           within one range of each other.
+        </MetricNote>
+      </section>
+
+      {/* --- movement over time ---------------------------------------------- */}
+
+      <section>
+        <SectionHeading
+          title="What has changed"
+          hint={
+            history.captures < 2
+              ? 'Ranking history, once there are two captures to compare.'
+              : `Rank across ${history.captures} captures, and who moved since the last one.`
+          }
+        />
+
+        {history.error ? (
+          <Card>
+            <p className="text-sm text-[var(--color-muted)]">
+              Score history could not be loaded ({history.error}). The rest of this page is
+              unaffected — it is computed live rather than from snapshots.
+            </p>
+          </Card>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <SectionHeading title="Rank over time" hint="Rank 1 at the top" />
+              <RankBump rows={history.rows} />
+            </Card>
+            <Card>
+              <SectionHeading title="Movers" hint="Since the previous comparable capture" />
+              <Movers rows={history.rows} />
+            </Card>
+          </div>
+        )}
+
+        <MetricNote>
+          These are the only numbers on this page that are <strong>not</strong> recomputed live.
+          They come from nightly snapshots, which is what makes them a history rather than a
+          re-derivation — and why a line breaks wherever the scoring formula changed. A score
+          computed one way and a score computed another are two different measurements, so no line
+          is drawn between them: 0029 moved five volume inputs onto per-week rates and shifted eight
+          seniors by half a point each without anyone&apos;s work changing.
+          {history.definitionVersions.length > 1 ? (
+            <>
+              {' '}
+              This period spans {history.definitionVersions.length} scoring definitions:{' '}
+              {history.definitionVersions.join(', ')}.
+            </>
+          ) : null}
         </MetricNote>
       </section>
 
