@@ -65,6 +65,48 @@ How to apply one, because the mechanics matter more than the permission:
   and it gets reported as the finding. Do not present a change as a fix on the
   strength of having applied it.
 
+## Multi-part work — one pull request per part, merged in sequence
+
+When a request has several components, **ship them one at a time**: build a part,
+get it green, open the pull request, merge it, then start the next part from the
+updated `main`. Do not accumulate a batch of finished components and push them as
+one change.
+
+This is not about small commits for their own sake. It is about where a failure
+lands. A single pull request carrying ten components has one CI result for ten
+things, so a red build says only "something in here is wrong", and a subtle
+runtime fault — a chart that renders but reads its data wrongly, a route that
+compiles but is never registered — has nine other changes to hide behind. Merged
+one at a time, each part is confirmed working against production before the next
+one is built on top of it, and a revert takes back exactly one thing.
+
+How to sequence it:
+
+- **The unit is the smallest thing that is green and useful on its own**, not the
+  smallest file. A library module and the first component that uses it belong in
+  one pull request, because the module alone would be dead code and splitting them
+  gives a red build on purpose. Two unrelated fixes never belong together, however
+  small.
+- **Where parts depend on each other, that dependency is the order.** Schema
+  before the read layer, read layer before the chart that draws it.
+- **Where they do not, sequence them anyway** and lead with whichever part the
+  others would be built on, or whichever is most likely to be wrong.
+- **Restart the branch from `main` after each merge** rather than stacking onto
+  already-merged history:
+  `git fetch origin main && git checkout -B <branch> origin/main`.
+- **Say what the sequence is before starting**, and report each merge as it
+  happens, so the work can be stopped between parts rather than only at the end.
+
+Two practical reasons this matters more here than it might elsewhere:
+
+- **Verification against production is the point.** Every part touches a live
+  database and a live deployment, and this app's own history shows what an
+  unverified guard costs: `definition_version` sat unread for two scoring
+  migrations and only revealed a mislabelled series when something finally
+  consumed it.
+- **Unpushed work is not safe.** Sessions have lost a whole checkout mid-task.
+  Anything not merged can vanish, so a merged part is a part that cannot be lost.
+
 ## Deploys
 
 **Production is `main`, always.** Vercel's git integration builds `main` as the
